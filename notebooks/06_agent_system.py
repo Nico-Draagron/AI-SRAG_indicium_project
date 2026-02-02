@@ -18,7 +18,7 @@
 # COMMAND ----------
 
 # DBTITLE 1,Instalar Bibliotecas
-%pip install -r requirements.txt --quiet
+%pip install -r ../requirements.txt --quiet
 dbutils.library.restartPython()
 
 # COMMAND ----------
