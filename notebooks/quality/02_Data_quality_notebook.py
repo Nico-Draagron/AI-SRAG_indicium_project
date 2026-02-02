@@ -260,16 +260,16 @@ def check_date_format(df, field_name):
     - dd/MM/yyyy (formato antigo)
     - yyyy-MM-dd (formato moderno)
     
-    Esta função usa try_to_date para evitar exceções em dados heterogêneos.
+    Esta função usa to_date com coalesce para evitar exceções em dados heterogêneos.
     """
     total = df.filter(F.col(field_name).isNotNull()).count()
     
-    # Tentar converter em múltiplos formatos usando try_to_date (tolerante a erros)
+    # Tentar converter em múltiplos formatos usando to_date com coalesce
     df_parsed = df.withColumn(
         f'{field_name}_parsed',
         F.coalesce(
-            F.try_to_date(F.col(field_name), 'dd/MM/yyyy'),
-            F.try_to_date(F.col(field_name), 'yyyy-MM-dd')
+            F.to_date(F.col(field_name), 'dd/MM/yyyy'),
+            F.to_date(F.col(field_name), 'yyyy-MM-dd')
         )
     )
     
@@ -329,20 +329,20 @@ def check_consistency_dates(df, field1, field2, relationship='before'):
     Args:
         relationship: 'before' (field1 deve ser antes de field2)
     
-    IMPORTANTE: Usa try_to_date para evitar exceções em dados heterogêneos.
+    IMPORTANTE: Usa to_date para evitar exceções em dados heterogêneos.
     """
-    # Parse dates com múltiplos formatos usando try_to_date (tolerante)
+    # Parse dates com múltiplos formatos usando to_date (tolerante)
     df_parsed = df.withColumn(
         f'{field1}_date', 
         F.coalesce(
-            F.try_to_date(F.col(field1), 'dd/MM/yyyy'),
-            F.try_to_date(F.col(field1), 'yyyy-MM-dd')
+            F.to_date(F.col(field1), 'dd/MM/yyyy'),
+            F.to_date(F.col(field1), 'yyyy-MM-dd')
         )
     ).withColumn(
         f'{field2}_date',
         F.coalesce(
-            F.try_to_date(F.col(field2), 'dd/MM/yyyy'),
-            F.try_to_date(F.col(field2), 'yyyy-MM-dd')
+            F.to_date(F.col(field2), 'dd/MM/yyyy'),
+            F.to_date(F.col(field2), 'yyyy-MM-dd')
         )
     )
     
@@ -1030,13 +1030,13 @@ documentation = f"""
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
   ⚠️  CS_SEXO: Codificação alfanumérica (M/F/I) em vez de numérica (1/2/9)
   ⚠️  Datas: Formatos mistos (dd/MM/yyyy E yyyy-MM-dd) no mesmo dataset
-  ⚠️  Parsing: Necessário try_to_date (to_date lança exceção e quebra pipeline)
+  ⚠️  Parsing: to_date com coalesce para múltiplos formatos (não lança exceção)
   ⚠️  EVOLUCAO: Contém valores além dos documentados (1/2/9)
   ⚠️  Serverless: RDD operations proibidas (.rdd, .map, collect loops)
   ✅ Código "9": Categoria válida ("Ignorado"), não é missing
 
   → Essas descobertas demonstram maturidade técnica e foram tratadas adequadamente
-  → Validação robusta usa try_to_date sem perda de governança
+  → Validação robusta usa to_date com coalesce sem perda de governança
   → Valores inválidos documentados para decisão na Silver
   → Implementação 100% Serverless-compatible (DataFrame API pura)
 
@@ -1177,7 +1177,7 @@ final_summary = f"""
 
 🔬 Descobertas Importantes:
   ⚠️  CS_SEXO usa M/F/I (não 1/2/9) → Domínio ajustado
-  ⚠️  Datas em múltiplos formatos → try_to_date implementado (essencial!)
+  ⚠️  Datas em múltiplos formatos → to_date com coalesce implementado (essencial!)
   ⚠️  EVOLUCAO tem valores não documentados → Investigado
   ⚠️  RDD operations proibidas em Serverless → Refatorado para DataFrame API
   ✅ Código "9" é válido → Mantido como categoria
@@ -1258,10 +1258,10 @@ print("=" * 80)
 # MAGIC 1. **Codificação de CS_SEXO**: Documentação oficial indica valores numéricos (1/2/9), mas dados reais usam alfanuméricos (M/F/I)
 # MAGIC 2. **Formatos de Data**: DATASUS mistura dd/MM/yyyy e yyyy-MM-dd no mesmo dataset
 # MAGIC 3. **Código "9"**: Categoria válida ("Ignorado"), não é dado ausente
-# MAGIC 4. **Parsing de Datas**: Necessário usar `try_to_date` em vez de `to_date` para dados heterogêneos
-# MAGIC    - `to_date()` lança exceção quando formato não bate (quebra pipeline)
-# MAGIC    - `try_to_date()` retorna NULL em vez de exceção (mantém governança)
-# MAGIC    - **Regra de ouro**: SEMPRE use `try_to_date` em Bronze/Quality/Silver
+# MAGIC 4. **Parsing de Datas**: Usar `to_date` com `coalesce` para dados heterogêneos
+# MAGIC    - `to_date()` retorna NULL quando formato não bate (não lança exceção)
+# MAGIC    - `coalesce()` tenta múltiplos formatos sequencialmente
+# MAGIC    - **Regra de ouro**: SEMPRE use `to_date` com `coalesce` em Bronze/Quality/Silver
 # MAGIC 5. **Valores Inválidos**: Campos podem conter códigos não documentados que precisam ser investigados
 # MAGIC 6. **Databricks Serverless**: Restrições importantes de compatibilidade
 # MAGIC    - ❌ Não use: `.rdd`, `.map`, `.flatMap`, `.foreach`, `collect()` em loops
@@ -1283,7 +1283,7 @@ print("=" * 80)
 # MAGIC **Data**: 2025-01-18
 # MAGIC 
 # MAGIC **Correções principais desta versão**:
-# MAGIC - ✅ Substituído `to_date` por `try_to_date` em todas as funções
+# MAGIC - ✅ Implementado `to_date` com `coalesce` para múltiplos formatos de data
 # MAGIC - ✅ Removido `.rdd` e `collect()` loops (incompatível com Serverless)
 # MAGIC - ✅ Implementação 100% DataFrame API (groupBy + agg)
 # MAGIC - ✅ Adicionada investigação automática de valores inválidos
