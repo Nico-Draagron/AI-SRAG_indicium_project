@@ -1,17 +1,17 @@
 # Databricks notebook source
 # MAGIC %md
 # MAGIC # 🔍 Camada de Validação - Data Quality Checks
-# MAGIC 
+# MAGIC
 # MAGIC **Projeto**: Sistema RAG para Monitoramento Epidemiológico - Indicium Healthcare PoC
-# MAGIC 
+# MAGIC
 # MAGIC **Objetivo**: Validar qualidade dos dados da camada Bronze antes de processar para Silver
-# MAGIC 
+# MAGIC
 # MAGIC ---
-# MAGIC 
+# MAGIC
 # MAGIC ## 📋 Escopo da Validação
-# MAGIC 
+# MAGIC
 # MAGIC Este notebook **NÃO corrige dados**, apenas **diagnostica problemas** e **gera métricas de qualidade**.
-# MAGIC 
+# MAGIC
 # MAGIC ### ✅ O que este notebook FAZ:
 # MAGIC - Lê dados da Bronze (`workspace.data_original.bronze_srag_raw`)
 # MAGIC - Executa checks automatizados de qualidade
@@ -19,18 +19,18 @@
 # MAGIC - Gera métricas de qualidade por ano
 # MAGIC - Cria relatórios para embasar decisões do Silver
 # MAGIC - Persiste resultados em tabela de auditoria
-# MAGIC 
+# MAGIC
 # MAGIC ### ❌ O que este notebook NÃO FAZ:
 # MAGIC - Modificar dados da Bronze
 # MAGIC - Imputar valores faltantes
 # MAGIC - Corrigir inconsistências
 # MAGIC - Aplicar regras de negócio
-# MAGIC 
+# MAGIC
 # MAGIC ### 🎯 Output Esperado:
 # MAGIC - Tabela: `workspace.data_original.quality_checks` (auditoria)
 # MAGIC - Tabela: `workspace.data_original.quality_summary` (métricas agregadas)
 # MAGIC - Decisões documentadas para camada Silver
-# MAGIC 
+# MAGIC
 # MAGIC ---
 
 # COMMAND ----------
@@ -65,7 +65,10 @@ print("=" * 80)
 # Configuração do Unity Catalog
 CATALOG = "workspace"
 SCHEMA_BRONZE = "data_original"
-
+# ==========================================
+# CONFIGURAÇÃO DO NOTEBOOK DE DATA QUALITY
+# ==========================================
+spark.conf.set("spark.sql.ansi.enabled", "false")
 # Tabelas
 TABLE_BRONZE = f"{CATALOG}.{SCHEMA_BRONZE}.bronze_srag_raw"
 TABLE_QUALITY_CHECKS = f"{CATALOG}.{SCHEMA_BRONZE}.quality_checks"
@@ -108,9 +111,9 @@ df_bronze.groupBy("ANO_DADOS").count().orderBy("ANO_DADOS").show()
 
 # MAGIC %md
 # MAGIC ## 🎯 4. Definição de Campos Críticos
-# MAGIC 
+# MAGIC
 # MAGIC **Baseado no dicionário de dados SRAG e nas métricas epidemiológicas requeridas**
-# MAGIC 
+# MAGIC
 # MAGIC **IMPORTANTE**: Domínios atualizados conforme dados reais do DATASUS (não documentação oficial)
 
 # COMMAND ----------
@@ -424,11 +427,11 @@ display(
 
 # MAGIC %md
 # MAGIC ## 🎯 7. Execução dos Checks - Domínio (Campos Categóricos)
-# MAGIC 
+# MAGIC
 # MAGIC **CORREÇÕES APLICADAS**:
 # MAGIC - CS_SEXO: Codificação alfanumérica (M/F/I) nos dados reais, não numérica (1/2/9)
 # MAGIC - EVOLUCAO: Pode conter valores além de 1/2/9 (ex: NULL ou outros códigos intermediários)
-# MAGIC 
+# MAGIC
 # MAGIC **IMPORTANTE**: Se ainda houver valores inválidos após ajuste de domínio,
 # MAGIC significa que os dados contêm códigos não documentados. Isso será tratado na Silver.
 
@@ -501,7 +504,7 @@ else:
 
 # MAGIC %md
 # MAGIC ## 📅 8. Execução dos Checks - Formato de Datas
-# MAGIC 
+# MAGIC
 # MAGIC **CORREÇÃO APLICADA**: Validação agora aceita múltiplos formatos (dd/MM/yyyy e yyyy-MM-dd)
 # MAGIC sem lançar exceções, mantendo rastreabilidade de valores inválidos.
 
@@ -595,9 +598,9 @@ if len(consistency_results) > 0:
 
 # MAGIC %md
 # MAGIC ## 📊 11. Análise Específica: Código "9" (Ignorado)
-# MAGIC 
+# MAGIC
 # MAGIC **IMPORTANTE**: Código 9 em SRAG significa "Ignorado", não é missing.
-# MAGIC 
+# MAGIC
 # MAGIC Precisamos quantificar para decisões no Silver.
 
 # COMMAND ----------
@@ -643,7 +646,7 @@ if len(high_code9) > 0:
 
 # MAGIC %md
 # MAGIC ## 📈 12. Métricas de Qualidade por Ano
-# MAGIC 
+# MAGIC
 # MAGIC **IMPORTANTE**: Implementação 100% compatível com Databricks Serverless.
 # MAGIC Usa apenas DataFrame API (sem RDD, collect loops, ou map operations).
 
@@ -1209,32 +1212,32 @@ print("=" * 80)
 
 # MAGIC %md
 # MAGIC ---
-# MAGIC 
+# MAGIC
 # MAGIC ## 📖 Notas de Uso
-# MAGIC 
+# MAGIC
 # MAGIC ### 🔄 Como Re-executar
-# MAGIC 
+# MAGIC
 # MAGIC ```python
 # MAGIC # Este notebook pode ser executado múltiplas vezes
 # MAGIC # Cada execução gera um novo VALIDATION_ID
 # MAGIC # Os resultados são APPEND nas tabelas de qualidade
 # MAGIC ```
-# MAGIC 
+# MAGIC
 # MAGIC ### 📊 Como Consultar Resultados
-# MAGIC 
+# MAGIC
 # MAGIC ```sql
 # MAGIC -- Ver última validação
 # MAGIC SELECT * FROM workspace.data_original.quality_summary 
 # MAGIC ORDER BY timestamp DESC LIMIT 1;
-# MAGIC 
+# MAGIC
 # MAGIC -- Ver checks críticos
 # MAGIC SELECT * FROM workspace.data_original.quality_checks
 # MAGIC WHERE status = 'CRITICAL'
 # MAGIC ORDER BY timestamp DESC;
 # MAGIC ```
-# MAGIC 
+# MAGIC
 # MAGIC ### 🔗 Integração com Silver
-# MAGIC 
+# MAGIC
 # MAGIC ```python
 # MAGIC # O notebook Silver deve:
 # MAGIC # 1. Ler quality_checks para decidir filtros
@@ -1242,19 +1245,19 @@ print("=" * 80)
 # MAGIC # 3. Transformar tipos baseado nas validações
 # MAGIC # 4. Criar campos calculados recomendados
 # MAGIC ```
-# MAGIC 
+# MAGIC
 # MAGIC ### ⚙️ Customização
-# MAGIC 
+# MAGIC
 # MAGIC Para adicionar novos checks:
-# MAGIC 
+# MAGIC
 # MAGIC 1. Adicione o campo em `CRITICAL_FIELDS`
 # MAGIC 2. Execute o notebook
 # MAGIC 3. Revise os resultados em `quality_checks`
-# MAGIC 
+# MAGIC
 # MAGIC ### 🔬 Lições Aprendidas (Dados Reais vs Documentação)
-# MAGIC 
+# MAGIC
 # MAGIC Este notebook demonstra maturidade técnica ao identificar e tratar:
-# MAGIC 
+# MAGIC
 # MAGIC 1. **Codificação de CS_SEXO**: Documentação oficial indica valores numéricos (1/2/9), mas dados reais usam alfanuméricos (M/F/I)
 # MAGIC 2. **Formatos de Data**: DATASUS mistura dd/MM/yyyy e yyyy-MM-dd no mesmo dataset
 # MAGIC 3. **Código "9"**: Categoria válida ("Ignorado"), não é dado ausente
@@ -1267,21 +1270,21 @@ print("=" * 80)
 # MAGIC    - ❌ Não use: `.rdd`, `.map`, `.flatMap`, `.foreach`, `collect()` em loops
 # MAGIC    - ✅ Use sempre: `groupBy + agg`, `when/sum/count`, DataFrame API pura
 # MAGIC    - Impacto: 1 job Spark vs N jobs, muito mais performático
-# MAGIC 
+# MAGIC
 # MAGIC Essas descobertas foram tratadas de forma adequada:
 # MAGIC - Domínios ajustados para refletir dados reais
 # MAGIC - Parsing tolerante de datas sem perda de rastreabilidade
 # MAGIC - Governança preservada em todas as correções
 # MAGIC - Valores inválidos identificados e documentados para análise
 # MAGIC - Código 100% compatível com Serverless (sem RDD operations)
-# MAGIC 
+# MAGIC
 # MAGIC ---
-# MAGIC 
+# MAGIC
 # MAGIC **Desenvolvido para**: Sistema RAG - Monitoramento Epidemiológico  
 # MAGIC **Ambiente**: Databricks Serverless + Unity Catalog  
 # MAGIC **Versão**: 1.3.0 (100% Serverless-compatible)  
 # MAGIC **Data**: 2025-01-18
-# MAGIC 
+# MAGIC
 # MAGIC **Correções principais desta versão**:
 # MAGIC - ✅ Implementado `to_date` com `coalesce` para múltiplos formatos de data
 # MAGIC - ✅ Removido `.rdd` e `collect()` loops (incompatível com Serverless)

@@ -22,7 +22,7 @@ from langchain_core.output_parsers import StrOutputParser
 from langchain_core.runnables import RunnablePassthrough, RunnableParallel
 from langchain_openai import ChatOpenAI
 
-from .vector_store import SRAGRetriever
+from src.rag.vector_store import SRAGRetriever
 
 
 # =============================================================================

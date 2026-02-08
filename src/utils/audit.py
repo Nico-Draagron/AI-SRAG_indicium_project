@@ -93,8 +93,6 @@ class AuditEvent(Enum):
     METRICS_COLLECTED = "metrics_collected"
     NEWS_COLLECTED = "news_collected"
     CHARTS_GENERATED = "charts_generated"
-    REPORT_GENERATED = "report_generated"
-    REPORT_VALIDATION_FAILED = "report_validation_failed"
     
     # Cache
     CACHE_CLEARED = "cache_cleared"
@@ -203,7 +201,7 @@ class AuditLogger:
         self,
         event_type: AuditEvent,
         details: Dict[str, Any],
-        status: str = "INFO"
+        status = "INFO"  # Union[str, EventStatus]
     ) -> None:
         """
         Registra um evento de auditoria
@@ -211,13 +209,18 @@ class AuditLogger:
         Args:
             event_type: Tipo do evento (enum)
             details: Detalhes específicos do evento
-            status: Status do evento (INFO, SUCCESS, WARNING, ERROR, CRITICAL)
+            status: Status do evento - string ("INFO", "SUCCESS") ou enum (EventStatus.INFO)
         """
-        # Converter string status para enum
-        try:
-            status_enum = EventStatus[status.upper()]
-        except KeyError:
-            status_enum = EventStatus.INFO
+        # Converter para enum se necessário
+        if isinstance(status, EventStatus):
+            status_enum = status  # Já é enum
+        elif isinstance(status, str):
+            try:
+                status_enum = EventStatus[status.upper()]
+            except KeyError:
+                status_enum = EventStatus.INFO
+        else:
+            status_enum = EventStatus.INFO  # Fallback
         
         # Calcular tempo decorrido
         elapsed = (datetime.now() - self.start_time).total_seconds()
@@ -469,6 +472,13 @@ class AuditLogger:
             # Converter para Spark DataFrame
             spark_df = spark.createDataFrame(df)
             
+            # Garantir que schema existe
+            try:
+                spark.sql(f"CREATE SCHEMA IF NOT EXISTS {catalog}.{schema}")
+                print(f"✅ Schema {catalog}.{schema} verificado/criado")
+            except Exception as schema_error:
+                print(f"⚠️ Erro ao criar schema: {schema_error}")
+            
             # Nome da tabela
             table_name = f"{catalog}.{schema}.agent_audit_logs"
             
@@ -479,6 +489,8 @@ class AuditLogger:
             
         except Exception as e:
             print(f"❌ Erro ao salvar logs em Delta: {e}")
+            import traceback
+            print(f"   Detalhes: {traceback.format_exc()[:300]}...")  # Truncar stack trace
     
     def export_to_json(self, filepath: str) -> None:
         """Exporta logs para arquivo JSON"""

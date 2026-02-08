@@ -9,18 +9,26 @@ Ferramentas para execução de tarefas:
 - ChartGenerator: Geração de gráficos (opcional)
 """
 
-from .sql_tool import GoldSQLTool
-from .report_generator import ReportGenerator, ReportSection
-from .web_search_tool import TavilySearchTool
-from .chart_tool import ChartGenerator
+from src.tools.sql_tool import GoldSQLTool
+from src.tools.report_generator import ReportGenerator, ReportSection
+from src.tools.web_search_tool import WebSearchTool
+from src.tools.chart_tool import ChartTool
+
+# Compatibility aliases for backward compatibility
+TavilySearchTool = WebSearchTool
+ChartGenerator = ChartTool
 
 __all__ = [
     # Core Tools
     "GoldSQLTool",
-    "ReportGenerator",
+    "ReportGenerator", 
     "ReportSection",
     
-    # Optional Tools
+    # Optional Tools - Native names
+    "WebSearchTool",
+    "ChartTool",
+    
+    # Optional Tools - Compatibility aliases
     "TavilySearchTool", 
     "ChartGenerator"
 ]

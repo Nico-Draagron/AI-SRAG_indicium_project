@@ -17,10 +17,10 @@ Módulos:
 """
 
 # Core components
-from .agents import SRAGOrchestrator, IntentRouter
-from .tools import GoldSQLTool, ReportGenerator
-from .rag import SRAGChain, GoldDocumentLoader
-from .utils import SQLGuardrails, AuditLogger
+from src.agents import SRAGOrchestrator, IntentRouter
+from src.tools import GoldSQLTool, ReportGenerator
+from src.rag import SRAGChain, GoldDocumentLoader
+from src.utils import SQLGuardrails, AuditLogger
 
 __version__ = "1.0.0"
 __author__ = "Indicium Tech"

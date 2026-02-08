@@ -1,18 +1,22 @@
 # Databricks notebook source
 # MAGIC %md
 # MAGIC # 🗺️ Gold - Métricas Geográficas
-# MAGIC 
+# MAGIC
 # MAGIC **Responsabilidade**: Criar `gold_metricas_geograficas` com agregação por UF
-# MAGIC 
+# MAGIC
 # MAGIC **Incluído**:
 # MAGIC - Ranking de UFs
 # MAGIC - Percentual nacional
 # MAGIC - 4 métricas epidemiológicas
 # MAGIC - Demografia por região
-# MAGIC 
+# MAGIC
 # MAGIC **Pré-requisito**: Execute `gold_setup` primeiro
-# MAGIC 
+# MAGIC
 # MAGIC ---
+
+# COMMAND ----------
+
+# MAGIC %run ./01_gold_setup
 
 # COMMAND ----------
 
@@ -114,15 +118,17 @@ df_metricas_geograficas = df_filtered.groupBy('sg_uf').agg(
         2
     ).alias('taxa_uti'),
     
+    # SIVEP Gripe: VACINA 1=Sim, 2=Não, 9=Ignorado
+    # is_vacinado = apenas vacina_clean=='1' (não mistura VACINA_COV)
     F.sum(F.when(F.col('is_vacinado'), 1).otherwise(0)).alias('total_vacinados'),
-    F.sum(F.when(F.col('vacina_clean').isNotNull(), 1).otherwise(0)).alias('casos_com_info_vacina'),
+    F.sum(F.when(F.col('vacina_clean').isin('1', '2'), 1).otherwise(0)).alias('casos_com_info_vacina'),
     
-    # Taxa Vacinação (SEM F.nullif - PySpark puro)
+    # Taxa Vacinação: vacinados / casos com info válida (1=Sim, 2=Não)
     F.round(
         F.when(
-            F.sum(F.when(F.col('vacina_clean').isNotNull(), 1).otherwise(0)) > 0,
+            F.sum(F.when(F.col('vacina_clean').isin('1', '2'), 1).otherwise(0)) > 0,
             F.sum(F.when(F.col('is_vacinado'), 1).otherwise(0)) * 100.0 /
-            F.sum(F.when(F.col('vacina_clean').isNotNull(), 1).otherwise(0))
+            F.sum(F.when(F.col('vacina_clean').isin('1', '2'), 1).otherwise(0))
         ).otherwise(None),
         2
     ).alias('taxa_vacinacao'),

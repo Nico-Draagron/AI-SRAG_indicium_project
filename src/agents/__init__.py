@@ -6,9 +6,8 @@ Sistema de agentes para orquestração:
 - SRAGOrchestrator: Agente principal com LangGraph
 - IntentRouter: Roteamento inteligente de consultas
 """
-
-from .orchestrator import SRAGOrchestrator, AgentState
-from .intent_router import (
+from src.agents.orchestrator import SRAGOrchestrator, AgentState
+from src.agents.intent_router import (
     IntentRouter,
     QueryIntent,
     ExecutionStrategy,

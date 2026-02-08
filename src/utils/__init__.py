@@ -8,22 +8,23 @@ Componentes de suporte e infraestrutura:
 - Exceptions: Hierarquia de exceções customizadas
 """
 
-from .guardrails import (
+from src.utils.guardrails import (
     SQLGuardrails,
-    PIIFilter,
     RateLimiter,
     ViolationSeverity,
     GuardrailsConfig
 )
-from .audit import (
+from src.utils.audit import (
     AuditLogger,
     AuditEvent,
     EventStatus
 )
-from .exceptions import (
+from src.utils.exceptions import (
     SRAGSystemError,
     OrchestratorError,
     SQLError,
+    SQLExecutionError,
+    SQLValidationError,
     RAGError,
     GuardrailViolation
 )
@@ -31,7 +32,6 @@ from .exceptions import (
 __all__ = [
     # Guardrails
     "SQLGuardrails",
-    "PIIFilter",
     "RateLimiter",
     "ViolationSeverity",
     "GuardrailsConfig",
@@ -45,6 +45,8 @@ __all__ = [
     "SRAGSystemError",
     "OrchestratorError", 
     "SQLError",
+    "SQLExecutionError",
+    "SQLValidationError", 
     "RAGError",
     "GuardrailViolation"
 ]
