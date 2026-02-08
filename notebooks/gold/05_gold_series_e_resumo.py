@@ -1,14 +1,18 @@
 # Databricks notebook source
 # MAGIC %md
 # MAGIC # 📈 Gold - Séries Temporais e Resumo Geral
-# MAGIC 
+# MAGIC
 # MAGIC **Responsabilidade**: 
 # MAGIC - Criar `gold_series_temporais` (diária + semanal)
 # MAGIC - Criar `gold_resumo_geral` (KPIs consolidados **com histórico**)
-# MAGIC 
+# MAGIC
 # MAGIC **Pré-requisito**: Execute `gold_setup` primeiro
-# MAGIC 
+# MAGIC
 # MAGIC ---
+
+# COMMAND ----------
+
+# MAGIC %run ./01_gold_setup
 
 # COMMAND ----------
 
@@ -200,8 +204,10 @@ kpis_base = df_silver.agg(
     F.sum(F.when(F.col('evolucao_clean').isNotNull(), 1).otherwise(0)).alias('casos_com_desfecho'),
     F.sum(F.when(F.col('is_internado'), 1).otherwise(0)).alias('total_internacoes'),
     F.sum(F.when(F.col('is_uti'), 1).otherwise(0)).alias('total_uti'),
+    # SIVEP Gripe: VACINA 1=Sim, 2=Não, 9=Ignorado
+    # is_vacinado = apenas vacina_clean=='1' (não mistura VACINA_COV)
     F.sum(F.when(F.col('is_vacinado'), 1).otherwise(0)).alias('total_vacinados'),
-    F.sum(F.when(F.col('vacina_clean').isNotNull(), 1).otherwise(0)).alias('casos_com_info_vacina'),
+    F.sum(F.when(F.col('vacina_clean').isin('1', '2'), 1).otherwise(0)).alias('casos_com_info_vacina'),
     
     # Demografia
     F.sum(F.when(F.col('is_idoso'), 1).otherwise(0)).alias('total_idosos'),
@@ -230,11 +236,12 @@ kpis_base = df_silver.agg(
         )
     ).alias('taxa_uti'),
     
+    # Taxa Vacinação: vacinados / casos com info válida (1=Sim, 2=Não)
     F.when(
-        F.sum(F.when(F.col('vacina_clean').isNotNull(), 1).otherwise(0)) > 0,
+        F.sum(F.when(F.col('vacina_clean').isin('1', '2'), 1).otherwise(0)) > 0,
         F.round(
             F.sum(F.when(F.col('is_vacinado'), 1).otherwise(0)) * 100.0 /
-            F.sum(F.when(F.col('vacina_clean').isNotNull(), 1).otherwise(0)),
+            F.sum(F.when(F.col('vacina_clean').isin('1', '2'), 1).otherwise(0)),
             2
         )
     ).alias('taxa_vacinacao'),

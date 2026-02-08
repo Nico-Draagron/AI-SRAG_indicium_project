@@ -1,48 +1,37 @@
 # ============================================
-# CORE LANGCHAIN / LANGGRAPH
+# LANGCHAIN ECOSSYSTEM (1.x COMPATÍVEL)
 # ============================================
+langchain>=1.1.0,<2.0.0
+langchain-core>=1.2.6,<2.0.0
+langchain-community>=0.3.0
+langchain-openai>=1.1.7
 langgraph>=0.2.45
-langchain>=0.3.7
-langchain-core>=0.3.15
-langchain-community>=0.3.7
-langchain-openai>=0.2.8
 
 # ============================================
-# LLM PROVIDER
+# OPENAI
 # ============================================
-openai>=1.54.5
+openai>=1.109.1,<3.0.0
 
 # ============================================
 # WEB SEARCH
 # ============================================
-tavily-python>=0.5.0
+tavily-python==0.5.0
 
 # ============================================
-# VISUALIZAÇÃO
+# DATA
 # ============================================
-plotly>=5.24.1
-kaleido>=0.2.1
+pandas>=2.0.0
+numpy>=1.26.0
 
 # ============================================
-# DATA PROCESSING
+# RETRY
 # ============================================
-pandas>=2.2.3
-numpy>=1.26.4
+tenacity>=8.0.0
 
 # ============================================
-# RETRY LOGIC
+# RAG / VECTOR
 # ============================================
-tenacity>=9.0.0
-
-# ============================================
-# RAG DEPENDENCIES
-# ============================================
-
-# Embeddings
-sentence-transformers>=3.3.1
-tiktoken>=0.8.0
-
-# Vector Store
 databricks-vectorsearch>=0.30
-chromadb>=0.5.23
-faiss-cpu>=1.9.0.post1
+sentence-transformers>=3.3.1
+transformers>=4.34.0
+tiktoken>=0.8.0

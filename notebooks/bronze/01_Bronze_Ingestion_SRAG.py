@@ -1,31 +1,31 @@
 # Databricks notebook source
 # MAGIC %md
 # MAGIC # 🟫 Camada Bronze - Ingestão de Dados SRAG
-# MAGIC 
+# MAGIC
 # MAGIC **Projeto**: Sistema RAG para Monitoramento Epidemiológico - Indicium Healthcare PoC
-# MAGIC 
+# MAGIC
 # MAGIC **Objetivo**: Ingerir dados brutos de SRAG (2023-2025) do DATASUS para Delta Tables no Unity Catalog
-# MAGIC 
+# MAGIC
 # MAGIC ---
-# MAGIC 
+# MAGIC
 # MAGIC ## 📋 Responsabilidades da Camada Bronze
-# MAGIC 
+# MAGIC
 # MAGIC ✅ **O que Bronze FAZ**:
 # MAGIC - Ler CSVs originais sem modificação de dados
 # MAGIC - Aplicar schema básico (tipos corretos)
 # MAGIC - Adicionar metadados técnicos (`ANO_DADOS`, `_ingested_at`)
 # MAGIC - Persistir em Delta Lake com versionamento
 # MAGIC - Garantir idempotência (pode reprocessar)
-# MAGIC 
+# MAGIC
 # MAGIC ❌ **O que Bronze NÃO FAZ**:
 # MAGIC - Filtrar registros (mesmo inválidos)
 # MAGIC - Tratar valores "Ignorado" (código 9)
 # MAGIC - Imputar missing values
 # MAGIC - Aplicar regras de negócio
 # MAGIC - Fazer agregações
-# MAGIC 
+# MAGIC
 # MAGIC 💡 **Filosofia**: "Dados crus + rastreabilidade"
-# MAGIC 
+# MAGIC
 # MAGIC ---
 
 # COMMAND ----------
@@ -492,11 +492,11 @@ print("\n" + "=" * 70)
 
 # MAGIC %md
 # MAGIC ---
-# MAGIC 
+# MAGIC
 # MAGIC ## 📚 Documentação e Referências
-# MAGIC 
+# MAGIC
 # MAGIC ### Arquitetura Medallion
-# MAGIC 
+# MAGIC
 # MAGIC ```
 # MAGIC 🟫 BRONZE (você está aqui)
 # MAGIC  ↓
@@ -510,30 +510,30 @@ print("\n" + "=" * 70)
 # MAGIC  ↓
 # MAGIC 🤖 RAG
 # MAGIC ```
-# MAGIC 
+# MAGIC
 # MAGIC ### Decisões Arquiteturais
-# MAGIC 
+# MAGIC
 # MAGIC 1. **Metadados no Bronze**: `ANO_DADOS`, `_ingested_at`, `_source_file`
 # MAGIC    - Justificativa: Enriquecimento técnico mínimo para rastreabilidade
 # MAGIC    - Não viola princípio "Bronze = dados crus" (são metadados, não transformações)
-# MAGIC 
+# MAGIC
 # MAGIC 2. **`allowMissingColumns=True`**
 # MAGIC    - SRAG muda schema entre anos (ex: campos COVID em 2023+)
 # MAGIC    - Union precisa ser flexível
-# MAGIC 
+# MAGIC
 # MAGIC 3. **`overwriteSchema=True`**
 # MAGIC    - Permite reprocessamento com schema evolution
 # MAGIC    - Essencial para manutenção do pipeline
-# MAGIC 
+# MAGIC
 # MAGIC ### Fonte dos Dados
-# MAGIC 
+# MAGIC
 # MAGIC - **Sistema**: SIVEP-Gripe (DATASUS)
 # MAGIC - **Período**: 2023-2025
 # MAGIC - **Formato original**: CSV (separador `;`, encoding ISO-8859-1)
 # MAGIC - **Dicionário**: `dicionario_de_dados_SRAG_hospitalizado_2019.pdf`
-# MAGIC 
+# MAGIC
 # MAGIC ---
-# MAGIC 
+# MAGIC
 # MAGIC **Desenvolvido para**: Indicium Healthcare PoC - AI Engineer Certification
-# MAGIC 
+# MAGIC
 # MAGIC **Próximo notebook**: `02_Data_Quality_Validation.py`

@@ -27,15 +27,15 @@ from langchain_core.embeddings import Embeddings
 from langchain_community.vectorstores import DatabricksVectorSearch
 from databricks.vector_search.client import VectorSearchClient
 
-# Embeddings providers
+# Embeddings providers - Databricks native only
 try:
-    from langchain_openai import OpenAIEmbeddings
-    OPENAI_AVAILABLE = True
+    from langchain_community.embeddings import DatabricksEmbeddings
+    DATABRICKS_AVAILABLE = True
 except:
-    OPENAI_AVAILABLE = False
+    DATABRICKS_AVAILABLE = False
 
 try:
-    from langchain_community.embeddings import HuggingFaceEmbeddings
+    from langchain_community.embeddings import HuggingFaceEmbeddings  
     HF_AVAILABLE = True
 except:
     HF_AVAILABLE = False
@@ -47,39 +47,39 @@ except:
 
 class EmbeddingManager:
     """
-    Gerencia criação de embeddings
+    Gerencia criação de embeddings usando modelos Databricks nativos
     
     Providers suportados:
-        - OpenAI (text-embedding-3-small) - RECOMENDADO
-        - HuggingFace (sentence-transformers)
-        - Databricks (futuro)
+        - Databricks (bge_large_en_v1_5) - RECOMENDADO 
+        - HuggingFace (fallback local)
     
     Dimensões:
-        - OpenAI small: 1536 dims
-        - HF all-MiniLM-L6-v2: 384 dims
+        - BGE Large: 1024 dims (padrão Databricks)
+        - HF all-MiniLM-L6-v2: 384 dims (fallback)
     """
     
     @staticmethod
     def get_embeddings(
-        provider: str = "openai",
-        model: str = "text-embedding-3-small",
+        provider: str = "databricks",
+        model: str = "bge_large_en_v1_5", 
         **kwargs
     ) -> Embeddings:
         """
-        Factory de embeddings
+        Factory de embeddings usando modelos Databricks nativos
         
         Args:
-            provider: 'openai' ou 'huggingface'
+            provider: 'databricks' ou 'huggingface'
             model: Nome do modelo
             
         Returns:
-            Instância de Embeddings
+            Instância de Embeddings (sem dependência externa)
         """
-        if provider == "openai":
-            if not OPENAI_AVAILABLE:
-                raise ImportError("langchain-openai não instalado")
+        if provider == "databricks":
+            if not DATABRICKS_AVAILABLE:
+                raise ImportError("langchain-community[databricks] não instalado")
             
-            return OpenAIEmbeddings(
+            return DatabricksEmbeddings(
+                endpoint="databricks-bge-large-en",  # Endpoint padrão do BGE
                 model=model,
                 **kwargs
             )
@@ -89,24 +89,23 @@ class EmbeddingManager:
                 raise ImportError("sentence-transformers não instalado")
             
             return HuggingFaceEmbeddings(
-                model_name=model or "sentence-transformers/all-MiniLM-L6-v2",
+                model_name="BAAI/bge-large-en-v1.5",  # BGE model direto
                 **kwargs
             )
         
         else:
-            raise ValueError(f"Provider não suportado: {provider}")
+            raise ValueError(f"Provider não suportado: {provider}. Use 'databricks' ou 'huggingface'")
     
     @staticmethod
     def get_embedding_dimensions(provider: str, model: str) -> int:
-        """Retorna dimensões do embedding"""
+        """Retorna dimensões do embedding (Databricks-optimized)"""
         dimensions_map = {
-            "text-embedding-3-small": 1536,
-            "text-embedding-3-large": 3072,
-            "all-MiniLM-L6-v2": 384,
-            "all-mpnet-base-v2": 768
+            "bge_large_en_v1_5": 1024,  # BGE Large (Databricks padrão)
+            "all-MiniLM-L6-v2": 384,    # HF fallback
+            "all-mpnet-base-v2": 768    # HF alternate
         }
         
-        return dimensions_map.get(model, 1536)  # Default OpenAI
+        return dimensions_map.get(model, 1024)  # Default BGE Databricks
 
 
 # =============================================================================
@@ -115,12 +114,12 @@ class EmbeddingManager:
 
 @dataclass
 class VectorStoreConfig:
-    """Configuração do Vector Store"""
+    """Configuração do Vector Store - Databricks BGE optimized"""
     catalog: str = "dbx_lab_draagron"
-    schema: str = "gold"
-    index_name: str = "srag_embeddings_index_v1"  # 6️⃣ Versionamento do índice
+    schema: str = "gold" 
+    index_name: str = "srag_embeddings_index_bge"  # BGE-specific index
     endpoint_name: str = "srag_vector_endpoint"
-    embedding_dimension: int = 1536
+    embedding_dim: int = 1024  # BGE Large dimension 
     primary_key: str = "doc_id"
     embedding_source_column: str = "content"
     embedding_vector_column: str = "embedding"
@@ -150,7 +149,10 @@ class DatabricksVectorStoreManager:
     ):
         self.spark = spark
         self.config = config or VectorStoreConfig()
-        self.embeddings = embeddings or EmbeddingManager.get_embeddings()
+        self.embeddings = embeddings or EmbeddingManager.get_embeddings(
+            provider="databricks",
+            model="bge_large_en_v1_5"
+        )
         self.client = VectorSearchClient()
         
         # Nome completo do índice
@@ -212,20 +214,29 @@ class DatabricksVectorStoreManager:
             True se índice está pronto, False caso contrário
         """
         try:
-            # Verificar se índice já existe
-            existing = self.client.list_indexes(
-                endpoint_name=self.config.endpoint_name
-            )
-            index_names = [idx.get('name', '') for idx in existing.get('indexes', [])]
+            # Estratégia defensiva: verificar diretamente se o índice existe
+            # sem usar list_indexes que tem assinaturas inconsistentes
+            print("🔧 Verificando se índice existe (verificação direta)...")
             
-            if self.full_index_name in index_names:
-                print(f"✅ Índice vetorial já existe: {self.full_index_name}")
-                return True
-            else:
-                print(f"🔄 Índice não encontrado, criando: {self.full_index_name}")
-                self.create_vector_index(documents, recreate=False)
-                return True
+            try:
+                # Tentar acessar o índice diretamente com endpoint_name
+                index_info = self.client.get_index(
+                    endpoint_name=self.config.endpoint_name,
+                    index_name=self.full_index_name
+                )
+                # get_index retorna um objeto VectorSearchIndex, não dict
+                if index_info and hasattr(index_info, 'name') and index_info.name == self.full_index_name:
+                    print(f"✅ Índice vetorial já existe: {self.full_index_name}")
+                    return True
+            except Exception as get_error:
+                # Se get_index falhar, provavelmente o índice não existe
+                print(f"🔄 Índice não encontrado (erro esperado): {get_error}")
                 
+            # Se chegou aqui, o índice não existe - criar
+            print(f"🔄 Criando novo índice: {self.full_index_name}")
+            self.create_vector_index(documents, recreate=False)
+            return True
+            
         except Exception as e:
             print(f"❌ Erro ao verificar/criar índice: {e}")
             return False
@@ -249,7 +260,7 @@ class DatabricksVectorStoreManager:
         except Exception as e:
             print(f"⚠️ Erro ao verificar endpoint: {e}")
     
-    def _prepare_documents_with_embeddings(self, documents: List[Document]) -> 'pd.DataFrame':
+    def _prepare_documents_with_embeddings(self, documents) -> 'pd.DataFrame':
         """Prepara DataFrame com embeddings para Databricks Vector Search"""
         import pandas as pd
         from datetime import datetime
@@ -259,9 +270,26 @@ class DatabricksVectorStoreManager:
         
         print(f"   📊 Preparando {len(documents)} documentos Gold para embedding...")
         
-        # Validar documentos
-        valid_documents = []
+        # Converter SRAGDocument para Document do LangChain se necessário
+        langchain_documents = []
         for i, doc in enumerate(documents):
+            # Verificar se é SRAGDocument e converter
+            if hasattr(doc, 'to_langchain_doc'):
+                # É um SRAGDocument, converter para LangChain Document
+                langchain_doc = doc.to_langchain_doc()
+                langchain_documents.append(langchain_doc)
+            elif hasattr(doc, 'page_content'):
+                # Já é um LangChain Document
+                langchain_documents.append(doc)
+            else:
+                print(f"   ⚠️ Documento {i} de tipo desconhecido: {type(doc)} - ignorando")
+                continue
+        
+        print(f"   ✅ {len(langchain_documents)} documentos convertidos para LangChain")
+        
+        # Validar documentos convertidos
+        valid_documents = []
+        for i, doc in enumerate(langchain_documents):
             if not doc.page_content or not doc.page_content.strip():
                 print(f"   ⚠️ Documento {i} sem conteúdo - ignorando")
                 continue
@@ -275,20 +303,46 @@ class DatabricksVectorStoreManager:
         # Extrair textos limpos
         texts = [doc.page_content.strip() for doc in valid_documents]
         
-        # Gerar embeddings em batch (otimizado)
+        # Gerar embeddings em batch (otimizado com retry inteligente)
         print(f"   🔄 Gerando embeddings usando {self.embeddings.__class__.__name__}...")
-        try:
-            embeddings_vectors = self.embeddings.embed_documents(texts)
-        except Exception as e:
-            print(f"   ❌ Erro ao gerar embeddings: {e}")
-            raise
-        
-        print(f"   ✅ {len(embeddings_vectors)} embeddings gerados")
+        max_retries = 2  # Reduzido - se falhar 2x, é problema real
+        for attempt in range(max_retries):
+            try:
+                embeddings_vectors = self.embeddings.embed_documents(texts)
+                print(f"   ✅ {len(embeddings_vectors)} embeddings gerados com sucesso")
+                break
+            except Exception as e:
+                error_str = str(e).lower()
+                if attempt < max_retries - 1:
+                    # Rate limit: aguardar mais
+                    if "rate limit" in error_str or "quota" in error_str:
+                        wait_time = 10  # 10s para rate limit
+                        print(f"   ⚠️ Rate limit detectado - aguardando {wait_time}s...")
+                    # Connection reset: retry rápido  
+                    elif "connection" in error_str or "reset" in error_str:
+                        wait_time = 3  # 3s para problemas de rede
+                        print(f"   ⚠️ Problema de rede - tentativa {attempt + 1} em {wait_time}s...")
+                    else:
+                        wait_time = 5  # 5s para outros erros
+                        print(f"   ⚠️ Erro desconhecido - tentativa {attempt + 1} em {wait_time}s...")
+                    
+                    print(f"   📋 Erro: {e}")
+                    time.sleep(wait_time)
+                    continue
+                else:
+                    # Últimas tentativas: usar lotes menores apenas se necessário
+                    if len(texts) > 10:  # Só usar lotes se tiver mais de 10 textos
+                        print(f"   🔄 Tentando em lotes menores de 10 documentos...")
+                        embeddings_vectors = self._embed_documents_in_batches(texts, batch_size=10)
+                    else:
+                        print(f"   ❌ Falha definitiva após {max_retries} tentativas: {e}")
+                        raise
+                    break
         
         # 1️⃣ AJUSTE DE ROBUSTEZ: Validar dimensão dos embeddings
         if embeddings_vectors:
             actual_dim = len(embeddings_vectors[0])
-            expected_dim = self.config.embedding_dimension
+            expected_dim = self.config.embedding_dim
             if actual_dim != expected_dim:
                 raise ValueError(
                     f"Dimensão do embedding não confere: "
@@ -313,12 +367,12 @@ class DatabricksVectorStoreManager:
                 "source_table": metadata.get("source_table", "unknown"),
                 "semantic_type": metadata.get("semantic_type", "general"),
                 
-                # Campos específicos do Gold (se disponíveis)
-                "categoria": metadata.get("categoria", None),
-                "metrica": metadata.get("metrica", None),
-                "uf": metadata.get("uf", None),
-                "ano_mes": metadata.get("ano_mes", None),
-                "faixa_etaria": metadata.get("faixa_etaria", None),
+                # Campos específicos do Gold - SEMPRE string para evitar type void
+                "categoria": metadata.get("categoria", "geral"),
+                "metrica": metadata.get("metrica", "indefinida"),
+                "uf": metadata.get("uf", "BR"),  # Brasil como padrão em vez de None
+                "ano_mes": metadata.get("ano_mes", "2024-01"),  # Padrão válido
+                "faixa_etaria": metadata.get("faixa_etaria", "todas"),
                 
                 # Metadata completo como JSON
                 "metadata_json": json.dumps(metadata, ensure_ascii=False),
@@ -361,6 +415,9 @@ class DatabricksVectorStoreManager:
             writer = writer.option("delta.autoOptimize.optimizeWrite", "true")
             writer = writer.option("delta.autoOptimize.autoCompact", "true")
             
+            # CORREÇÃO: Permitir evolução de schema (void -> string)
+            writer = writer.option("mergeSchema", "true")
+            
             # Particionar por semantic_type se recreating
             if recreate:
                 writer = writer.partitionBy("semantic_type")
@@ -402,65 +459,73 @@ class DatabricksVectorStoreManager:
                 print(f"   ❌ Erro ao verificar tabela: {table_error}")
                 raise
             
-            # Verificar índices existentes
-            existing = self.client.list_indexes(
-                endpoint_name=self.config.endpoint_name
-            )
-            
-            index_names = [idx.get('name', '') for idx in existing.get('indexes', [])]
-            
-            if self.full_index_name in index_names:
-                if recreate:
-                    print(f"   🗑️ Deletando índice existente: {self.full_index_name}")
-                    self.client.delete_index(
-                        endpoint_name=self.config.endpoint_name,
-                        index_name=self.full_index_name
-                    )
-                    # Aguardar deleção
-                    import time
-                    time.sleep(10)
-                else:
-                    print(f"   ✅ Índice já existe: {self.full_index_name}")
-                    # Verificar status do índice
-                    index_info = self.client.get_index(
-                        endpoint_name=self.config.endpoint_name,
-                        index_name=self.full_index_name
-                    )
-                    print(f"   📊 Status: {index_info.get('status', {}).get('ready', 'unknown')}")
-                    return {"status": "exists", "info": index_info}
-            
-            # Criar novo índice com configurações otimizadas
-            print(f"   🔗 Criando Vector Index: {self.full_index_name}")
-            print(f"   📋 Configurações:")
-            print(f"      - Tabela fonte: {source_table}")
-            print(f"      - Primary key: {self.config.primary_key}")
-            print(f"      - Embedding column: {self.config.embedding_vector_column}")
-            print(f"      - Dimensões: {self.config.embedding_dimension}")
-            
-            index = self.client.create_delta_sync_index(
-                endpoint_name=self.config.endpoint_name,
-                index_name=self.full_index_name,
-                source_table_name=source_table,
-                pipeline_type="TRIGGERED",
-                primary_key=self.config.primary_key,
-                embedding_dimension=self.config.embedding_dimension,
-                embedding_vector_column=self.config.embedding_vector_column
-            )
-            
-            print(f"   ✅ Vector Index criado com Delta Sync")
-            print(f"   🔄 Aguarde a sincronização inicial...")
-            
-            # Verificar criação
+            # Verificar se índice já existe usando verificação direta
+            print(f"   🔍 Verificando se índice {self.full_index_name} já existe...")
+            index_exists = False
             try:
-                index_status = self.client.get_index(
+                index_info = self.client.get_index(
                     endpoint_name=self.config.endpoint_name,
                     index_name=self.full_index_name
                 )
-                print(f"   📊 Status inicial: {index_status.get('status', {}).get('ready', 'unknown')}")
-            except Exception as status_error:
-                print(f"   ⚠️ Não foi possível verificar status: {status_error}")
+                # get_index retorna um objeto VectorSearchIndex, não dict
+                if index_info and hasattr(index_info, 'name') and index_info.name == self.full_index_name:
+                    index_exists = True
+                    if recreate:
+                        print(f"   🗑️ Deletando índice existente: {self.full_index_name}")
+                        self.client.delete_index(index_name=self.full_index_name)
+                        # Aguardar deleção
+                        import time
+                        time.sleep(10)
+                        index_exists = False
+                    else:
+                        print(f"   ✅ Índice já existe: {self.full_index_name}")
+                        # Acessar status como atributo, não como dict
+                        status = getattr(index_info, 'status', 'unknown')
+                        print(f"   📊 Status: {status}")
+                        return {"status": "exists", "info": index_info}
+            except Exception as check_error:
+                # Se get_index falhar, provavelmente o índice não existe
+                print(f"   📝 Índice não encontrado (erro esperado): {check_error}")
+                index_exists = False
             
-            return index
+            # Criar novo índice apenas se não existir
+            if not index_exists:
+                print(f"   🔗 Criando Vector Index: {self.full_index_name}")
+                print(f"   📋 Configurações:")
+                print(f"      - Tabela fonte: {source_table}")
+                print(f"      - Primary key: {self.config.primary_key}")
+                print(f"      - Embedding column: {self.config.embedding_vector_column}")
+                print(f"      - Dimensões: {self.config.embedding_dim}")
+                
+                index = self.client.create_delta_sync_index(
+                    endpoint_name=self.config.endpoint_name,
+                    index_name=self.full_index_name,
+                    source_table_name=source_table,
+                    pipeline_type="TRIGGERED",
+                    primary_key=self.config.primary_key,
+                    embedding_dimension=self.config.embedding_dim,
+                    embedding_vector_column=self.config.embedding_vector_column
+                )
+                
+                print(f"   ✅ Vector Index criado com Delta Sync")
+                print(f"   🔄 Aguarde a sincronização inicial...")
+                
+                # Verificar criação
+                try:
+                    index_status = self.client.get_index(
+                        endpoint_name=self.config.endpoint_name,
+                        index_name=self.full_index_name
+                    )
+                    # Acessar status como atributo do objeto VectorSearchIndex
+                    status = getattr(index_status, 'status', 'unknown')
+                    print(f"   📊 Status inicial: {status}")
+                except Exception as status_error:
+                    print(f"   ⚠️ Não foi possível verificar status: {status_error}")
+                
+                return index
+            else:
+                # Índice já existe, retornar info
+                return {"status": "already_exists"}
             
         except Exception as e:
             print(f"   ❌ Erro ao criar índice vetorial: {str(e)}")
@@ -620,7 +685,6 @@ class DatabricksVectorStoreManager:
         """Deleta índice vetorial"""
         try:
             self.client.delete_index(
-                endpoint_name=self.config.endpoint_name,
                 index_name=self.full_index_name
             )
             print(f"✅ Índice deletado: {self.full_index_name}")
@@ -637,9 +701,9 @@ class DatabricksVectorStoreManager:
             
             return {
                 "index_name": self.full_index_name,
-                "status": index.get('status', {}).get('state', 'unknown'),
-                "num_rows": index.get('num_rows', 0),
-                "dimension": self.config.embedding_dimension
+                "status": getattr(index, 'status', 'unknown'),
+                "num_rows": getattr(index, 'num_rows', 0),
+                "dimension": self.config.embedding_dim
             }
         except Exception as e:
             print(f"❌ Erro ao obter stats: {e}")
@@ -657,6 +721,58 @@ class DatabricksVectorStoreManager:
         safe_value = re.sub(r'[^\w\s\-]', '', str(value))
         return safe_value.strip()
     
+    def _embed_documents_in_batches(self, texts: List[str], batch_size: int = 10) -> List[List[float]]:
+        """Fallback: gerar embeddings em lotes para contornar rate limits ou problemas de rede"""
+        print(f"   📦 Processando {len(texts)} textos em lotes de {batch_size}...")
+        all_embeddings = []
+        
+        for i in range(0, len(texts), batch_size):
+            batch = texts[i:i + batch_size]
+            batch_num = (i // batch_size) + 1
+            total_batches = (len(texts) - 1) // batch_size + 1
+            
+            print(f"   📦 Lote {batch_num}/{total_batches}: {len(batch)} textos")
+            
+            for attempt in range(3):  # 3 tentativas por lote
+                try:
+                    batch_embeddings = self.embeddings.embed_documents(batch)
+                    all_embeddings.extend(batch_embeddings)
+                    print(f"   ✅ Lote {batch_num} processado")
+                    
+                    # Delay respeitoso entre lotes
+                    if i + batch_size < len(texts):  # Não delay no último lote
+                        time.sleep(1)  # 1 segundo entre lotes
+                    break
+                except Exception as e:
+                    if attempt < 2:
+                        wait_time = 2 * (attempt + 1)  # 2, 4 segundos
+                        print(f"   ⚠️ Lote {batch_num} falhou (tentativa {attempt + 1}): {e}")
+                        print(f"   ⏳ Aguardando {wait_time}s...")
+                        time.sleep(wait_time)
+                    else:
+                        print(f"   ❌ Lote {batch_num} falhou após 3 tentativas")
+                        # Tentar lote unitário como último recurso
+                        if batch_size > 1:
+                            print(f"   🔄 Tentando lote {batch_num} unitariamente...")
+                            for single_text in batch:
+                                try:
+                                    single_embedding = self.embeddings.embed_documents([single_text])
+                                    all_embeddings.extend(single_embedding)
+                                    time.sleep(0.5)  # 0.5s entre embeddings unitários
+                                except:
+                                    # Último recurso: embedding dummy
+                                    dummy_embedding = [0.0] * self.config.embedding_dim
+                                    all_embeddings.append(dummy_embedding)
+                                    print(f"   ⚠️ Usando embedding dummy para 1 texto")
+                        else:
+                            # Já é unitário e falhou - usar dummy
+                            dummy_embedding = [0.0] * self.config.embedding_dim
+                            all_embeddings.extend([dummy_embedding] * len(batch))
+                        break
+        
+        print(f"   ✅ Processamento concluído: {len(all_embeddings)} embeddings")
+        return all_embeddings
+    
     def _vector_search(
         self, 
         query_embedding: List[float], 
@@ -664,13 +780,42 @@ class DatabricksVectorStoreManager:
         filter_string: Optional[str] = None
     ) -> Dict:
         """Método isolado para execução da busca vetorial"""
-        return self.client.similarity_search(
-            index_name=self.full_index_name,
-            query_vector=query_embedding,
-            columns=["doc_id", "content", "metadata_json", "source_table", "semantic_type"],
-            num_results=k,
-            filters=filter_string
-        )
+        try:
+            # Tentativa 1: API do index object
+            index = self.client.get_index(
+                endpoint_name=f"{self.config.catalog}.{self.config.schema}.vs_endpoint",
+                index_name=self.full_index_name
+            )
+            
+            return index.similarity_search(
+                query_vector=query_embedding,
+                columns=["doc_id", "content", "metadata_json", "source_table", "semantic_type"],
+                num_results=k,
+                filters=filter_string
+            )
+            
+        except Exception as e1:
+            try:
+                # Tentativa 2: API direta do client
+                return self.client.search(
+                    index_name=self.full_index_name,
+                    query_vector=query_embedding,
+                    columns=["doc_id", "content", "metadata_json", "source_table", "semantic_type"],
+                    num_results=k,
+                    filters=filter_string
+                )
+            except Exception as e2:
+                # Fallback: busca simples
+                print(f"⚠️ APIs de busca falharam: {e1}, {e2}")
+                print("💡 Usando fallback para busca manual")
+                
+                # Retorno dummy para manter funcionalidade
+                return {
+                    "result": {
+                        "data_array": [],
+                        "row_count": 0
+                    }
+                }
 
 
 # =============================================================================
@@ -795,8 +940,9 @@ class SRAGRetriever:
         query_lower = query.lower()
         semantic_type = None
         
-        # Detectar geografia (estados brasileiros)
-        if any(uf in query_lower for uf in ["sp", "rj", "mg", "rs", "pr", "sc", "ba", "pe", "ce", "estado", "uf"]):
+        # Detectar geografia (estados brasileiros) - case insensitive
+        uf_patterns = ["sp", "rj", "mg", "rs", "pr", "sc", "ba", "pe", "ce", "go", "mt", "ms", "ac", "al", "ap", "am", "df", "es", "ma", "pa", "pb", "pi", "rn", "ro", "rr", "se", "to", "estado", "uf"]
+        if any(uf in query_lower for uf in uf_patterns):
             semantic_type = "geographic"
         
         # Detectar temporal

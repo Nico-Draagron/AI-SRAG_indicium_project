@@ -14,11 +14,11 @@ from langchain_core.messages import BaseMessage, HumanMessage, AIMessage
 from langchain_openai import ChatOpenAI
 from langgraph.graph import StateGraph, END
 
-from .intent_router import IntentRouter, RoutingDecision, ExecutionStrategy
-from ..tools.sql_tool import GoldSQLTool
-from ..rag.rag_chain import SRAGChain
-from ..utils.exceptions import OrchestratorError, SQLError, RAGError
-from ..utils.audit import AuditLogger, AuditEvent, EventStatus
+from src.agents.intent_router import IntentRouter, RoutingDecision, ExecutionStrategy
+from src.tools.sql_tool import GoldSQLTool
+from src.rag.rag_chain import SRAGChain
+from src.utils.exceptions import OrchestratorError, SQLError, RAGError
+from src.utils.audit import AuditLogger, AuditEvent, EventStatus
 
 
 class AgentState(TypedDict):
@@ -28,6 +28,9 @@ class AgentState(TypedDict):
     routing_decision: Optional[RoutingDecision]
     sql_results: Optional[Dict]
     rag_results: Optional[Dict]
+    news_results: Optional[Dict]
+    chart_paths: Optional[List[str]]
+    geographic_data: Optional[Dict]
     final_answer: Optional[str]
     sources: List[str]
     errors: List[str]
@@ -53,16 +56,22 @@ class SRAGOrchestrator:
         llm: ChatOpenAI,
         audit_logger: Optional[AuditLogger] = None,
         rag_chain: Optional[SRAGChain] = None,
-        use_llm_routing: bool = False
+        use_llm_routing: bool = False,
+        web_search_tool=None,
+        chart_tool=None
     ):
         self.spark = spark
         self.llm = llm
         self.audit = audit_logger
         self.rag_chain = rag_chain
         
-        # Ferramentas
+        # Ferramentas principais
         self.sql_tool = GoldSQLTool(spark, audit_logger)
         self.router = IntentRouter(use_llm_classification=use_llm_routing)
+        
+        # Ferramentas opcionais
+        self.web_search_tool = web_search_tool
+        self.chart_tool = chart_tool
         
         # Grafo
         self.graph = self._build_graph()
@@ -70,7 +79,11 @@ class SRAGOrchestrator:
         if self.audit:
             self.audit.log_event(
                 AuditEvent.ORCHESTRATOR_INITIALIZED,
-                {"has_rag": rag_chain is not None},
+                {
+                    "has_rag": rag_chain is not None,
+                    "has_web_search": web_search_tool is not None,
+                    "has_charts": chart_tool is not None
+                },
                 EventStatus.INFO
             )
     
@@ -201,6 +214,13 @@ class SRAGOrchestrator:
                             LIMIT 12
                         """
                     
+                    if self.audit:
+                        self.audit.log_event(
+                            AuditEvent.SQL_QUERY_START,
+                            {"table": table, "query_type": "routing_based"},
+                            EventStatus.INFO
+                        )
+                    
                     result = self.sql_tool.execute_query(query)
                     all_results[table] = result
                     
@@ -215,6 +235,69 @@ class SRAGOrchestrator:
                     continue
             
             state["sql_results"] = all_results
+            
+            # Executar Web Search se disponível (sempre para relatórios completos)
+            if self.web_search_tool and ("relatório" in state["user_query"].lower() or "notícias" in state["user_query"].lower() or "completo" in state["user_query"].lower()):
+                try:
+                    if self.audit:
+                        self.audit.log_event(
+                            AuditEvent.WEB_SEARCH_START,
+                            {"node": "web_search"},
+                            EventStatus.INFO
+                        )
+                    
+                    news_results = self.web_search_tool.search_news(
+                        query="SRAG Brasil COVID-19 influenza",
+                        days_back=7,
+                        max_results=5
+                    )
+                    state["news_results"] = news_results
+                    
+                    if self.audit:
+                        self.audit.log_event(
+                            AuditEvent.WEB_SEARCH_SUCCESS,  
+                            {"tool": "web_search", "articles": len(news_results.get("articles", []))},
+                            EventStatus.SUCCESS
+                        )
+                        
+                except Exception as web_err:
+                    state["errors"].append(f"Web search error: {str(web_err)}")
+                    state["news_results"] = {}
+            
+            # Executar Chart Tool se disponível (sempre para relatórios completos)
+            if self.chart_tool and ("relatório" in state["user_query"].lower() or "gráficos" in state["user_query"].lower() or "completo" in state["user_query"].lower()):
+                try:
+                    if self.audit:
+                        self.audit.log_event(
+                            AuditEvent.CHART_GENERATION_START,
+                            {"node": "chart_generation"},
+                            EventStatus.INFO
+                        )
+                    
+                    chart_paths = []
+                    
+                    # Gráfico 1: Casos diários (últimos 30 dias)
+                    daily_chart = self.chart_tool.generate_daily_chart()
+                    if daily_chart:
+                        chart_paths.append(daily_chart)
+                    
+                    # Gráfico 2: Casos mensais (últimos 12 meses) 
+                    monthly_chart = self.chart_tool.generate_monthly_chart()
+                    if monthly_chart:
+                        chart_paths.append(monthly_chart)
+                    
+                    state["chart_paths"] = chart_paths
+                    
+                    if self.audit:
+                        self.audit.log_event(
+                            AuditEvent.CHART_GENERATED,  
+                            {"tool": "chart_generation", "charts": len(chart_paths)},
+                            EventStatus.SUCCESS
+                        )
+                        
+                except Exception as chart_err:
+                    state["errors"].append(f"Chart generation error: {str(chart_err)}")
+                    state["chart_paths"] = []
             
             if all_results:
                 total_rows = sum(r.get("rows", 0) for r in all_results.values() if r.get("success"))
@@ -443,6 +526,9 @@ RESPOSTA:"""
             "routing_decision": None,
             "sql_results": None,
             "rag_results": None,
+            "news_results": None,
+            "chart_paths": None,
+            "geographic_data": None,
             "final_answer": None,
             "sources": [],
             "errors": []
@@ -483,6 +569,11 @@ RESPOSTA:"""
                 "success": success,
                 "answer": final_state.get("final_answer"),
                 "sources": final_state.get("sources", []),
+                "sql_results": final_state.get("sql_results", {}),
+                "rag_results": final_state.get("rag_results", {}),
+                "news_results": final_state.get("news_results", {}),
+                "chart_paths": final_state.get("chart_paths", []),
+                "geographic_data": final_state.get("geographic_data", {}),
                 "routing": {
                     "intent": final_state["routing_decision"].intent.value if final_state.get("routing_decision") and final_state["routing_decision"].intent else None,
                     "strategy": final_state["routing_decision"].strategy.value if final_state.get("routing_decision") else None,

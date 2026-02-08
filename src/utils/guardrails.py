@@ -28,7 +28,7 @@ from collections import defaultdict
 
 import pandas as pd
 
-from ...utils.exceptions import GuardrailViolation, SQLValidationError
+from src.utils.exceptions import GuardrailViolation, SQLValidationError
 
 
 # =============================================================================

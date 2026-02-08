@@ -20,7 +20,7 @@ from dataclasses import dataclass
 from langchain_openai import ChatOpenAI
 from langchain_core.messages import HumanMessage, SystemMessage
 
-from ..utils.audit import AuditLogger, AuditEvent, EventStatus
+from src.utils.audit import AuditLogger, AuditEvent, EventStatus
 
 
 @dataclass
@@ -77,7 +77,7 @@ class ReportGenerator:
             self.audit.log_event(
                 AuditEvent.REPORT_GENERATION_START,
                 {"has_metrics": metrics is not None, "has_news": news is not None},
-                EventStatus.INFO
+                "INFO"
             )
         
         sections = []
@@ -115,7 +115,7 @@ class ReportGenerator:
             self.audit.log_event(
                 AuditEvent.REPORT_GENERATED,
                 {"sections": len(sections), "length": len(report_md)},
-                EventStatus.SUCCESS
+                "SUCCESS"
             )
         
         return report_md

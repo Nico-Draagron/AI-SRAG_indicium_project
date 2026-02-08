@@ -1,15 +1,15 @@
 # Databricks notebook source
 # MAGIC %md
 # MAGIC # Camada Silver - Transformação e Limpeza de Dados SRAG
-# MAGIC 
+# MAGIC
 # MAGIC **Projeto**: Sistema RAG para Monitoramento Epidemiológico
-# MAGIC 
+# MAGIC
 # MAGIC **Objetivo**: Criar tabela Silver limpa, tipada e otimizada para análises epidemiológicas
-# MAGIC 
+# MAGIC
 # MAGIC ---
-# MAGIC 
+# MAGIC
 # MAGIC ## Escopo da Transformação
-# MAGIC 
+# MAGIC
 # MAGIC ### Conteúdo:
 # MAGIC - Seleciona apenas colunas críticas (197 → ~35-40)
 # MAGIC - Aplica tipagem correta (String → Date, Int, Boolean)
@@ -19,12 +19,12 @@
 # MAGIC - Valida consistência temporal
 # MAGIC - Particiona por ano + mês
 # MAGIC - Otimiza com Z-ordering
-# MAGIC 
+# MAGIC
 # MAGIC ### Transformações:
 # MAGIC - **Input**: `bronze.bronze_srag_raw` (870.914 registros, 197 colunas)
 # MAGIC - **Output**: `silver.silver_srag_clean` (~500k-700k registros, 35-40 colunas)
 # MAGIC - **Redução esperada**: 20-40% por filtros de qualidade
-# MAGIC 
+# MAGIC
 # MAGIC ### Decisões Arquiteturais:
 # MAGIC - Código "9" = "Ignorado" (mantido como categoria válida)
 # MAGIC - Colunas `_clean` para métricas (sem "9")
@@ -180,12 +180,22 @@ if 'SEM_PRI' in df_typed.columns:
     )
     print(f"  ✓ SEM_PRI → sem_pri (IntegerType, 1-53)")
 
-campos_categoricos = ['CS_SEXO', 'FEBRE', 'TOSSE', 'DISPNEIA', 'SATURACAO', 
+campos_categoricos = ['FEBRE', 'TOSSE', 'DISPNEIA', 'SATURACAO', 
                      'HOSPITAL', 'UTI', 'EVOLUCAO', 'VACINA', 'VACINA_COV']
 
 for campo in campos_categoricos:
     if campo in df_typed.columns:
         df_typed = df_typed.withColumn(campo.lower(), F.col(campo))
+
+# Tratamento específico para CS_SEXO - DATASUS: M→'1', F→'2', outros→NULL
+if 'CS_SEXO' in df_typed.columns:
+    df_typed = df_typed.withColumn(
+        'cs_sexo',
+        F.when(F.col('CS_SEXO') == 'M', '1')
+         .when(F.col('CS_SEXO') == 'F', '2')
+         .otherwise(None)
+    )
+    print(f"  ✓ CS_SEXO → cs_sexo (M→'1', F→'2', outros→NULL)")
 
 outros_campos = ['NU_NOTIFIC', 'SG_UF', 'CO_MUN_RES', 'TP_IDADE', 'CS_RACA', 
                  'GARGANTA', 'DESC_RESP', 'SUPORT_VEN', 'CLASSI_FIN', 
@@ -396,15 +406,14 @@ df_engineered = df_engineered.withColumn(
 
 print(f"  ✓ is_internado, is_uti")
 
+# SIVEP Gripe: VACINA 1=Sim, 2=Não, 9=Ignorado
+# is_vacinado usa apenas VACINA (campo oficial), não VACINA_COV
 df_engineered = df_engineered.withColumn(
     'is_vacinado',
-    F.when(
-        (F.col('vacina_clean') == '1') | (F.col('vacina_cov') == '1'),
-        True
-    ).otherwise(False)
+    F.when(F.col('vacina_clean') == '1', True).otherwise(False)
 )
 
-print(f"  ✓ is_vacinado (VACINA=1 OU VACINA_COV=1)")
+print(f"  ✓ is_vacinado (apenas VACINA=1, conforme SIVEP Gripe)")
 
 if 'febre' in df_engineered.columns:
     df_engineered = df_engineered.withColumn(
@@ -1077,19 +1086,19 @@ print("=" * 80)
 
 # MAGIC %md
 # MAGIC ---
-# MAGIC 
+# MAGIC
 # MAGIC ## Notas de Uso
-# MAGIC 
+# MAGIC
 # MAGIC ### Como Re-executar
-# MAGIC 
+# MAGIC
 # MAGIC Este notebook é IDEMPOTENTE e pode ser executado múltiplas vezes com OVERWRITE sem criar duplicatas.
-# MAGIC 
+# MAGIC
 # MAGIC ### Como Consultar
-# MAGIC 
+# MAGIC
 # MAGIC ```sql
 # MAGIC -- Consulta básica
 # MAGIC SELECT * FROM workspace.silver.silver_srag_clean LIMIT 10;
-# MAGIC 
+# MAGIC
 # MAGIC -- Taxa de mortalidade por ano
 # MAGIC SELECT 
 # MAGIC     ano,
@@ -1098,51 +1107,51 @@ print("=" * 80)
 # MAGIC WHERE evolucao_clean IS NOT NULL
 # MAGIC GROUP BY ano;
 # MAGIC ```
-# MAGIC 
+# MAGIC
 # MAGIC ### Integração com Gold
-# MAGIC 
+# MAGIC
 # MAGIC O notebook Gold deve:
 # MAGIC 1. Ler silver.silver_srag_clean
 # MAGIC 2. Criar agregações por período/região
 # MAGIC 3. Calcular métricas epidemiológicas
 # MAGIC 4. Criar tabelas para dashboards
-# MAGIC 
+# MAGIC
 # MAGIC ### Manutenção
-# MAGIC 
+# MAGIC
 # MAGIC ```sql
 # MAGIC -- Vacuum (deletar arquivos antigos após 7 dias)
 # MAGIC VACUUM workspace.silver.silver_srag_clean RETAIN 168 HOURS;
-# MAGIC 
+# MAGIC
 # MAGIC -- Recomputar estatísticas
 # MAGIC ANALYZE TABLE workspace.silver.silver_srag_clean COMPUTE STATISTICS;
-# MAGIC 
+# MAGIC
 # MAGIC -- Ver histórico Delta
 # MAGIC DESCRIBE HISTORY workspace.silver.silver_srag_clean;
 # MAGIC ```
-# MAGIC 
+# MAGIC
 # MAGIC ### Campos Críticos
-# MAGIC 
+# MAGIC
 # MAGIC **Para Métricas (usar campos _clean)**:
 # MAGIC - `evolucao_clean`: Exclui código "9"
 # MAGIC - `uti_clean`: Exclui código "9"
 # MAGIC - `vacina_clean`: Exclui código "9"
 # MAGIC - `hospital_clean`: Exclui código "9"
-# MAGIC 
+# MAGIC
 # MAGIC **Para Análise Descritiva (usar campos originais)**:
 # MAGIC - `evolucao`: Inclui "9" (Ignorado)
 # MAGIC - `uti`: Inclui "9"
 # MAGIC - `vacina`: Inclui "9"
-# MAGIC 
+# MAGIC
 # MAGIC ### Alertas Recomendados
-# MAGIC 
+# MAGIC
 # MAGIC Configure alertas para:
 # MAGIC - Perda de registros > 60%
 # MAGIC - Duplicatas em nu_notific
 # MAGIC - Taxa de mortalidade fora do esperado
 # MAGIC - Falha no Z-ordering
-# MAGIC 
+# MAGIC
 # MAGIC ---
-# MAGIC 
+# MAGIC
 # MAGIC **Desenvolvido para**: Sistema RAG - Monitoramento Epidemiológico  
 # MAGIC **Ambiente**: Databricks Serverless + Unity Catalog  
 # MAGIC **Versão**: 1.0.0  
