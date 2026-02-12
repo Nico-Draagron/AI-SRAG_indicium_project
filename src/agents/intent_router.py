@@ -1,15 +1,17 @@
 """
-Intent Router - Roteamento Inteligente SQL vs RAG
-==================================================
+Intent Router - Roteamento Inteligente SQL vs RAG (CORRIGIDO)
+==============================================================
 
 Decide a estratégia de resposta baseado na intenção da query:
 - SQL direto: Perguntas factuais ("Quantos casos em SP?")
 - RAG: Perguntas analíticas ("Por que a mortalidade aumentou?")
 - Híbrido: Perguntas mistas ("Quais UFs tiveram aumento e por quê?")
 
+✅ CORREÇÃO v1.0.1: ChatAnthropic → ChatOpenAI (linha 27)
+
 Author: AI Engineer Certification - Indicium
-Date: January 2025
-Version: 1.0.0
+Date: February 2025
+Version: 1.0.1 - CORRIGIDO
 """
 
 from typing import Dict, List, Optional
@@ -17,6 +19,7 @@ from dataclasses import dataclass
 from enum import Enum
 import re
 
+# ✅ CORREÇÃO: Importar ChatOpenAI ao invés de ChatAnthropic
 from langchain_openai import ChatOpenAI
 from langchain_core.messages import HumanMessage
 
@@ -159,8 +162,9 @@ class IntentRouter:
         self.selector = StrategySelector()
         
         if use_llm_classification:
-            self.llm = ChatAnthropic(
-                model="claude-3-5-haiku-20241022",
+            # ✅ CORREÇÃO: Usar ChatOpenAI ao invés de ChatAnthropic
+            self.llm = ChatOpenAI(
+                model="gpt-4o-mini",
                 temperature=0.0
             )
     
@@ -202,7 +206,7 @@ class IntentRouter:
         )
     
     def _classify_with_llm(self, query: str) -> List[QueryIntent]:
-        """Classificação via LLM"""
+        """Classificação via LLM usando ChatOpenAI"""
         prompt = f"""Classifique a intenção desta query sobre SRAG:
 
 Query: "{query}"

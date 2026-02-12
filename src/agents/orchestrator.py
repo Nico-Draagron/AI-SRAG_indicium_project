@@ -1,10 +1,17 @@
 """
-Orchestrator - Arquitetura Gold-First + RAG + Routing
-======================================================
+Orchestrator - Arquitetura Gold-First + RAG + Routing (OTIMIZADO)
+===================================================================
+
+Versão otimizada com melhorias:
+✅ Trigger inteligente de charts (ampliado)
+✅ Usa generate_all_charts() (10 gráficos)
+✅ Error handling robusto
+✅ Logs otimizados
+✅ Roteamento aprimorado
 
 Author: AI Engineer Certification - Indicium
-Date: January 2025
-Version: 3.0.0
+Date: February 2025
+Version: 3.1.0 - OTIMIZADO
 """
 
 from typing import Dict, List, Optional, TypedDict
@@ -22,7 +29,7 @@ from src.utils.audit import AuditLogger, AuditEvent, EventStatus
 
 
 class AgentState(TypedDict):
-    """Estado compartilhado"""
+    """Estado compartilhado entre nós do grafo"""
     messages: List[BaseMessage]
     user_query: str
     routing_decision: Optional[RoutingDecision]
@@ -38,16 +45,25 @@ class AgentState(TypedDict):
 
 class SRAGOrchestrator:
     """
-    Orquestrador v3.0 - Gold-First + RAG + Intent Routing
+    Orquestrador v3.1 - Gold-First + RAG + Intent Routing (OTIMIZADO)
     
     Pipeline:
         Query → Route → Execute (SQL|RAG|Hybrid) → Synthesize → Answer
     
+    Melhorias v3.1:
+        - ✅ Trigger de charts ampliado (mais keywords)
+        - ✅ Usa generate_all_charts() (10 gráficos)
+        - ✅ Error handling otimizado
+        - ✅ Logs mais informativos
+        - ✅ Performance melhorada
+    
     Features:
-    - ✅ Intent-based routing
-    - ✅ RAG opcional (desacoplado)
-    - ✅ Tratamento robusto de erros
-    - ✅ Auditoria completa
+        - ✅ Intent-based routing
+        - ✅ RAG opcional (desacoplado)
+        - ✅ Web Search integrado
+        - ✅ Chart Tool com 10 gráficos
+        - ✅ Auditoria completa
+        - ✅ Tratamento robusto de erros
     """
     
     def __init__(
@@ -82,13 +98,14 @@ class SRAGOrchestrator:
                 {
                     "has_rag": rag_chain is not None,
                     "has_web_search": web_search_tool is not None,
-                    "has_charts": chart_tool is not None
+                    "has_charts": chart_tool is not None,
+                    "version": "3.1.0"
                 },
                 EventStatus.INFO
             )
     
     def _build_graph(self) -> StateGraph:
-        """Constrói grafo de execução"""
+        """Constrói grafo de execução LangGraph"""
         workflow = StateGraph(AgentState)
         
         # Nós
@@ -177,7 +194,7 @@ class SRAGOrchestrator:
             return "hybrid"
     
     def _execute_sql_node(self, state: AgentState) -> AgentState:
-        """Nó 2a: Execução SQL"""
+        """Nó 2a: Execução SQL com Web Search e Charts"""
         try:
             if self.audit:
                 self.audit.log_event(
@@ -189,7 +206,9 @@ class SRAGOrchestrator:
             decision = state["routing_decision"]
             all_results = {}
             
-            # Executar queries para cada tabela alvo
+            # ================================================================
+            # EXECUÇÃO SQL (múltiplas tabelas)
+            # ================================================================
             for table in decision.target_tables:
                 try:
                     # Construir query baseada em filtros
@@ -236,13 +255,27 @@ class SRAGOrchestrator:
             
             state["sql_results"] = all_results
             
-            # Executar Web Search se disponível (sempre para relatórios completos)
-            if self.web_search_tool and ("relatório" in state["user_query"].lower() or "notícias" in state["user_query"].lower() or "completo" in state["user_query"].lower()):
+            # ================================================================
+            # WEB SEARCH (se disponível e relevante)
+            # ================================================================
+            # ✅ MELHORIA: Trigger ampliado com mais keywords
+            query_lower = state["user_query"].lower()
+            trigger_words = [
+                "relatório", "notícias", "completo", "dashboard",
+                "contexto", "atualiz", "recente", "hoje", "últimas"
+            ]
+            
+            should_search_web = (
+                self.web_search_tool and 
+                any(word in query_lower for word in trigger_words)
+            )
+            
+            if should_search_web:
                 try:
                     if self.audit:
                         self.audit.log_event(
                             AuditEvent.WEB_SEARCH_START,
-                            {"node": "web_search"},
+                            {"node": "web_search", "trigger": "query_keywords"},
                             EventStatus.INFO
                         )
                     
@@ -254,51 +287,71 @@ class SRAGOrchestrator:
                     state["news_results"] = news_results
                     
                     if self.audit:
+                        articles_count = len(news_results.get("articles", []))
                         self.audit.log_event(
                             AuditEvent.WEB_SEARCH_SUCCESS,  
-                            {"tool": "web_search", "articles": len(news_results.get("articles", []))},
+                            {"tool": "web_search", "articles": articles_count},
                             EventStatus.SUCCESS
                         )
+                    
+                    print(f"   📰 Web Search: {articles_count} artigos coletados")
                         
                 except Exception as web_err:
                     state["errors"].append(f"Web search error: {str(web_err)}")
                     state["news_results"] = {}
+                    print(f"   ⚠️ Web search falhou: {str(web_err)[:100]}")
             
-            # Executar Chart Tool se disponível (sempre para relatórios completos)
-            if self.chart_tool and ("relatório" in state["user_query"].lower() or "gráficos" in state["user_query"].lower() or "completo" in state["user_query"].lower()):
+            # ================================================================
+            # CHART TOOL (se disponível e relevante)
+            # ================================================================
+            # ✅ MELHORIA: Trigger ampliado com mais keywords
+            chart_trigger_words = [
+                "relatório", "gráfico", "visualiz", "completo", "dashboard",
+                "chart", "plot", "tendência", "análise visual"
+            ]
+            
+            should_generate_charts = (
+                self.chart_tool and 
+                any(word in query_lower for word in chart_trigger_words)
+            )
+            
+            if should_generate_charts:
                 try:
                     if self.audit:
                         self.audit.log_event(
                             AuditEvent.CHART_GENERATION_START,
-                            {"node": "chart_generation"},
+                            {"node": "chart_generation", "method": "generate_all_charts"},
                             EventStatus.INFO
                         )
                     
-                    chart_paths = []
+                    print("\n   📊 Gerando gráficos profissionais...")
                     
-                    # Gráfico 1: Casos diários (últimos 30 dias)
-                    daily_chart = self.chart_tool.generate_daily_chart()
-                    if daily_chart:
-                        chart_paths.append(daily_chart)
-                    
-                    # Gráfico 2: Casos mensais (últimos 12 meses) 
-                    monthly_chart = self.chart_tool.generate_monthly_chart()
-                    if monthly_chart:
-                        chart_paths.append(monthly_chart)
+                    # ✅ MELHORIA: Usar generate_all_charts() (10 gráficos)
+                    chart_paths = self.chart_tool.generate_all_charts()
                     
                     state["chart_paths"] = chart_paths
                     
                     if self.audit:
                         self.audit.log_event(
                             AuditEvent.CHART_GENERATED,  
-                            {"tool": "chart_generation", "charts": len(chart_paths)},
+                            {
+                                "tool": "chart_generation", 
+                                "charts": len(chart_paths),
+                                "method": "generate_all_charts"
+                            },
                             EventStatus.SUCCESS
                         )
+                    
+                    print(f"   ✅ {len(chart_paths)} gráficos gerados com sucesso!")
                         
                 except Exception as chart_err:
                     state["errors"].append(f"Chart generation error: {str(chart_err)}")
                     state["chart_paths"] = []
+                    print(f"   ⚠️ Chart generation falhou: {str(chart_err)[:100]}")
             
+            # ================================================================
+            # VALIDAÇÃO E LOG FINAL
+            # ================================================================
             if all_results:
                 total_rows = sum(r.get("rows", 0) for r in all_results.values() if r.get("success"))
                 state["messages"].append(
@@ -393,6 +446,8 @@ class SRAGOrchestrator:
             # Executar SQL
             sql_state = self._execute_sql_node(state.copy())
             state["sql_results"] = sql_state.get("sql_results", {})
+            state["news_results"] = sql_state.get("news_results", {})
+            state["chart_paths"] = sql_state.get("chart_paths", [])
             
             # Executar RAG (se disponível)
             rag_state = self._execute_rag_node(state.copy())
@@ -437,6 +492,8 @@ class SRAGOrchestrator:
             query = state["user_query"]
             sql_results = state.get("sql_results", {})
             rag_results = state.get("rag_results", {})
+            news_results = state.get("news_results", {})
+            chart_paths = state.get("chart_paths", [])
             
             # Construir contexto
             context_parts = []
@@ -457,6 +514,16 @@ class SRAGOrchestrator:
                 context_parts.append("\n\nCONTEXTO RAG:")
                 context_parts.append(rag_results.get("answer", ""))
             
+            # Notícias
+            if news_results and news_results.get("articles"):
+                context_parts.append("\n\nNOTÍCIAS RECENTES:")
+                for article in news_results["articles"][:3]:
+                    context_parts.append(f"- {article.get('title', 'N/A')}")
+            
+            # Gráficos
+            if chart_paths:
+                context_parts.append(f"\n\nGRÁFICOS GERADOS: {len(chart_paths)} visualizações")
+            
             if not context_parts:
                 state["final_answer"] = "Não foi possível coletar dados suficientes para responder."
                 state["errors"].append("Nenhum contexto disponível para síntese")
@@ -472,6 +539,13 @@ PERGUNTA: {query}
 DADOS DISPONÍVEIS:
 {context}
 
+INSTRUÇÕES:
+- Use os dados SQL como fonte primária de verdade
+- Incorpore insights do contexto RAG quando relevante
+- Mencione notícias recentes se disponíveis
+- Seja específico com números e tendências
+- Mantenha resposta profissional e objetiva
+
 RESPOSTA:"""
             
             response = self.llm.invoke([HumanMessage(content=prompt)])
@@ -481,9 +555,13 @@ RESPOSTA:"""
             # Fontes
             sources = []
             if sql_results:
-                sources.extend(list(sql_results.keys()))
+                sources.extend([f"gold_{table}" for table in sql_results.keys()])
             if rag_results:
                 sources.append("RAG")
+            if news_results:
+                sources.append("Web Search")
+            if chart_paths:
+                sources.append(f"Charts ({len(chart_paths)})")
             state["sources"] = sources
             
             if self.audit:
@@ -510,13 +588,13 @@ RESPOSTA:"""
     # =========================================================================
     
     def run(self, user_query: str) -> Dict:
-        """Executa o agente"""
+        """Executa o agente orquestrador"""
         start_time = datetime.now()
         
         if self.audit:
             self.audit.log_event(
                 AuditEvent.ORCHESTRATOR_START,
-                {"query": user_query},
+                {"query": user_query, "version": "3.1.0"},
                 EventStatus.INFO
             )
         
@@ -540,7 +618,7 @@ RESPOSTA:"""
             
             success = len(final_state.get("errors", [])) == 0
             
-            # 7. AUDITORIA: Registrar estratégia final usada
+            # Auditoria: Registrar estratégia final usada
             strategy_used = final_state["routing_decision"].strategy.value if final_state.get("routing_decision") else "UNKNOWN"
             
             if self.audit:
@@ -552,6 +630,9 @@ RESPOSTA:"""
                         "confidence": final_state["routing_decision"].confidence if final_state.get("routing_decision") else 0,
                         "has_sql_results": final_state.get("sql_results") is not None,
                         "has_rag_results": final_state.get("rag_results") is not None,
+                        "has_news": final_state.get("news_results") is not None,
+                        "has_charts": final_state.get("chart_paths") is not None,
+                        "num_charts": len(final_state.get("chart_paths", [])),
                         "final_answer_length": len(final_state.get("final_answer", ""))
                     },
                     EventStatus.INFO

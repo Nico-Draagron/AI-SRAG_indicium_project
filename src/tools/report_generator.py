@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 """
 Report Generator - Geração de Relatórios Markdown
 ==================================================
@@ -11,6 +12,7 @@ Gera relatório epidemiológico automatizado com:
 
 Author: Certificação AI Engineer - Indicium
 Date: January 2025
+Version: 2.0.0
 """
 
 from typing import Dict, List, Optional
@@ -77,7 +79,7 @@ class ReportGenerator:
             self.audit.log_event(
                 AuditEvent.REPORT_GENERATION_START,
                 {"has_metrics": metrics is not None, "has_news": news is not None},
-                "INFO"
+                EventStatus.INFO
             )
         
         sections = []
@@ -115,7 +117,7 @@ class ReportGenerator:
             self.audit.log_event(
                 AuditEvent.REPORT_GENERATED,
                 {"sections": len(sections), "length": len(report_md)},
-                "SUCCESS"
+                EventStatus.SUCCESS
             )
         
         return report_md

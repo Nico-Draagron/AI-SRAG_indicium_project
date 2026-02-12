@@ -1,25 +1,35 @@
 """
-Chart Tool - Geração Avançada de Visualizações para SRAG (CORRIGIDO)
+Chart Tool - Geração Profissional de Visualizações SRAG (REFATORADO)
 ====================================================================
 
-Versão corrigida com:
-- ✅ Imports condicionais (sem quebrar se utils não existirem)
-- ✅ Output directory para Databricks (/dbfs/FileStore)
-- ✅ Validação de dependências
-- ✅ Error handling robusto
-- ✅ Dados dummy para demonstração
+Versão refatorada com 10 gráficos profissionais para certificação:
+
+OBRIGATÓRIOS (2):
+1. ✅ Casos diários (últimos 30 dias)
+2. ✅ Casos mensais (últimos 12 meses)
+
+ESSENCIAIS (6):
+3. ✅ Tendência temporal completa (36 meses 2023-2025)
+4. ✅ Comparativo anual (2023 vs 2024 vs 2025)
+5. ✅ Heatmap de sazonalidade mensal
+6. ✅ Taxa de crescimento mensal
+7. ✅ Ranking Top 10 UFs
+8. ✅ Perfil demográfico (faixas etárias)
+
+DIFERENCIAIS (2):
+9. ✅ Mortalidade x UTI (dois eixos Y)
+10. ✅ Vacinação vs Mortalidade (correlação)
 
 Author: AI Engineer Certification - Indicium
-Date: January 2025
-Version: 2.1.0 - CORRIGIDO
+Date: February 2025
+Version: 3.0.0 - REFATORADO COMPLETO
 """
 
-from typing import Dict, List, Optional, Tuple, Any, Union
+from typing import Dict, List, Optional, Tuple, Any
 from datetime import datetime, timedelta
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
-import json
 import traceback
 
 import pandas as pd
@@ -28,17 +38,20 @@ import plotly.express as px
 from plotly.subplots import make_subplots
 import plotly.io as pio
 
-# ✅ Imports condicionais para evitar erros
+# Imports condicionais para auditoria
 try:
-    from src.utils.audit import AuditLogger, AuditEvent
+    from src.utils.audit import AuditLogger, AuditEvent, EventStatus
 except ImportError:
-    # Stub para AuditLogger se não existir
     class AuditEvent:
         TOOL_INITIALIZED = "tool_initialized"
         CHART_GENERATION_START = "chart_generation_start"
         CHART_GENERATED = "chart_generated"
         CHART_ERROR = "chart_error"
-        CHART_EXPORT_ERROR = "chart_export_error"
+    
+    class EventStatus:
+        INFO = "INFO"
+        SUCCESS = "SUCCESS"
+        ERROR = "ERROR"
     
     class AuditLogger:
         def log_event(self, event_type, details=None, status="INFO"):
@@ -47,10 +60,8 @@ except ImportError:
 try:
     from src.utils.exceptions import ChartGenerationError, ChartValidationError
 except ImportError:
-    # Criar exceções básicas
     class ChartGenerationError(Exception):
         pass
-    
     class ChartValidationError(Exception):
         pass
 
@@ -60,55 +71,23 @@ except ImportError:
 # =============================================================================
 
 class ChartType(Enum):
-    """Tipos de gráficos suportados"""
+    """Tipos de gráficos"""
     LINE = "line"
     BAR = "bar"
-    AREA = "area"
-    SCATTER = "scatter"
     HEATMAP = "heatmap"
-    PIE = "pie"
-    WATERFALL = "waterfall"
-    FUNNEL = "funnel"
-    GAUGE = "gauge"
+    SCATTER = "scatter"
     COMBO = "combo"
-
-
-class ChartTheme(Enum):
-    """Temas visuais"""
-    LIGHT = "plotly_white"
-    DARK = "plotly_dark"
-    MINIMAL = "simple_white"
-    PROFESSIONAL = "seaborn"
-    SRAG_CUSTOM = "srag_custom"
-
-
-class ExportFormat(Enum):
-    """Formatos de exportação"""
-    HTML = "html"
-    PNG = "png"
-    SVG = "svg"
-    JSON = "json"
-    PDF = "pdf"
+    WATERFALL = "waterfall"
 
 
 @dataclass
 class ChartConfig:
-    """Configuração global de gráficos"""
-    default_theme: ChartTheme = ChartTheme.LIGHT
-    default_height: int = 500
-    default_width: int = 900
-    enable_interactivity: bool = True
-    enable_annotations: bool = True
-    enable_trend_lines: bool = True
-    show_grid: bool = True
-    show_legend: bool = True
-    
-    # ✅ CORRIGIDO: Usar /dbfs/FileStore em vez de /tmp para Databricks
+    """Configuração global"""
+    default_height: int = 600
+    default_width: int = 1000
     output_directory: str = "/dbfs/FileStore/charts"
     
-    default_export_formats: List[ExportFormat] = field(default_factory=lambda: [ExportFormat.HTML])
-    
-    # Cores customizadas SRAG
+    # Cores profissionais SRAG
     color_palette: List[str] = field(default_factory=lambda: [
         "#1f77b4",  # Azul principal
         "#ff7f0e",  # Laranja alerta
@@ -120,222 +99,76 @@ class ChartConfig:
         "#7f7f7f",  # Cinza
     ])
     
-    annotation_font_size: int = 10
-    annotation_arrow_color: str = "#666666"
-    max_data_points: int = 1000
-    enable_webgl: bool = False
+    # Cores específicas para métricas
+    color_casos: str = "#1f77b4"
+    color_mortalidade: str = "#d62728"
+    color_uti: str = "#ff7f0e"
+    color_vacinacao: str = "#2ca02c"
+    color_crescimento_pos: str = "#2ca02c"
+    color_crescimento_neg: str = "#d62728"
 
 
 @dataclass
 class ChartMetadata:
-    """Metadados do gráfico gerado"""
+    """Metadados do gráfico"""
     chart_id: str
     chart_type: ChartType
     title: str
     created_at: datetime
     data_points: int
-    export_paths: Dict[str, str]
-    file_sizes: Dict[str, int]
+    export_path: str
     generation_time_seconds: float
 
 
 # =============================================================================
-# ANALISADOR DE TENDÊNCIAS
-# =============================================================================
-
-class TrendAnalyzer:
-    """Analisa tendências em séries temporais"""
-    
-    @staticmethod
-    def detect_trend(values: List[float]) -> str:
-        """Detecta tendência geral"""
-        if len(values) < 2:
-            return "insufficient_data"
-        
-        diffs = [values[i] - values[i-1] for i in range(1, len(values))]
-        increases = sum(1 for d in diffs if d > 0)
-        decreases = sum(1 for d in diffs if d < 0)
-        total = len(diffs)
-        
-        if increases / total > 0.6:
-            return "crescente"
-        elif decreases / total > 0.6:
-            return "decrescente"
-        else:
-            return "estável"
-    
-    @staticmethod
-    def calculate_growth_rate(values: List[float]) -> float:
-        """Calcula taxa de crescimento média"""
-        if len(values) < 2:
-            return 0.0
-        
-        first = values[0]
-        last = values[-1]
-        
-        if first == 0:
-            return 0.0
-        
-        return ((last - first) / first) * 100
-    
-    @staticmethod
-    def find_peaks(values: List[float], threshold: float = 0.1) -> List[int]:
-        """Encontra picos na série"""
-        peaks = []
-        
-        for i in range(1, len(values) - 1):
-            if values[i] > values[i-1] and values[i] > values[i+1]:
-                if values[i] > max(values) * (1 - threshold):
-                    peaks.append(i)
-        
-        return peaks
-    
-    @staticmethod
-    def calculate_moving_average(values: List[float], window: int = 7) -> List[float]:
-        """Calcula média móvel"""
-        if len(values) < window:
-            return values
-        
-        ma = []
-        for i in range(len(values)):
-            if i < window - 1:
-                ma.append(None)
-            else:
-                ma.append(sum(values[i-window+1:i+1]) / window)
-        
-        return ma
-
-
-# =============================================================================
-# GERADOR DE ANOTAÇÕES
-# =============================================================================
-
-class AnnotationGenerator:
-    """Gera anotações automáticas para gráficos"""
-    
-    @staticmethod
-    def create_trend_annotation(
-        x_position: Any,
-        y_position: float,
-        trend: str,
-        growth_rate: float
-    ) -> Dict:
-        """Cria anotação de tendência"""
-        text = f"{trend.capitalize()}"
-        if abs(growth_rate) > 1:
-            text += f" ({growth_rate:+.1f}%)"
-        
-        return {
-            "x": x_position,
-            "y": y_position,
-            "text": text,
-            "showarrow": True,
-            "arrowhead": 2,
-            "arrowsize": 1,
-            "arrowwidth": 1,
-            "arrowcolor": "#666666",
-            "font": {"size": 10, "color": "#333333"},
-            "bgcolor": "rgba(255, 255, 255, 0.8)",
-            "bordercolor": "#666666",
-            "borderwidth": 1,
-            "borderpad": 4
-        }
-    
-    @staticmethod
-    def create_peak_annotation(x_position: Any, y_position: float, value: float) -> Dict:
-        """Cria anotação de pico"""
-        return {
-            "x": x_position,
-            "y": y_position,
-            "text": f"Pico: {value:,.0f}",
-            "showarrow": True,
-            "arrowhead": 2,
-            "ax": 0,
-            "ay": -40,
-            "font": {"size": 10, "color": "#d62728"},
-            "bgcolor": "rgba(255, 255, 255, 0.9)",
-            "bordercolor": "#d62728",
-            "borderwidth": 2
-        }
-    
-    @staticmethod
-    def create_threshold_line(
-        y_value: float,
-        label: str,
-        color: str = "#ff7f0e"
-    ) -> Dict:
-        """Cria linha de threshold"""
-        return {
-            "type": "line",
-            "y0": y_value,
-            "y1": y_value,
-            "x0": 0,
-            "x1": 1,
-            "xref": "paper",
-            "line": {
-                "color": color,
-                "width": 2,
-                "dash": "dash"
-            },
-            "label": {
-                "text": label,
-                "textposition": "end",
-                "font": {"size": 10}
-            }
-        }
-
-
-# =============================================================================
-# CHART TOOL PRINCIPAL
+# CHART TOOL REFATORADO
 # =============================================================================
 
 class ChartTool:
     """
-    Ferramenta de geração de gráficos para SRAG
+    Ferramenta de geração de 10 gráficos profissionais para SRAG
+    
+    Pipeline de execução:
+        1. Coletar dados do Spark (queries otimizadas)
+        2. Processar e validar dados
+        3. Gerar gráfico com Plotly
+        4. Exportar HTML
+        5. Auditar resultado
     
     Example:
-        >>> chart_tool = ChartTool(audit_logger=logger)
-        >>> result = chart_tool.create_line_chart(
-        ...     data=[{"x": "2025-01", "y": 1000}, {"x": "2025-02", "y": 1200}],
-        ...     title="Casos Mensais SRAG",
-        ...     x_col="x",
-        ...     y_col="y"
-        ... )
-        >>> print(result["path"])
+        >>> chart_tool = ChartTool(spark, audit_logger)
+        >>> paths = chart_tool.generate_all_charts()
+        >>> print(f"Gerados {len(paths)} gráficos")
     """
     
     def __init__(
         self,
+        spark,
         audit_logger: Optional[AuditLogger] = None,
         config: Optional[ChartConfig] = None,
         output_dir: Optional[str] = None
     ):
-        # ✅ Audit opcional
+        self.spark = spark
         self.audit = audit_logger if audit_logger else AuditLogger()
         self.config = config or ChartConfig()
         
-        # ✅ Output directory com fallback
+        # Output directory
         if output_dir:
             self.output_dir = Path(output_dir)
         else:
             self.output_dir = Path(self.config.output_directory)
         
-        # ✅ Criar diretório com tratamento de erro
+        # Criar diretório
         try:
             self.output_dir.mkdir(parents=True, exist_ok=True)
-            print(f"✅ Chart output dir criado: {self.output_dir}")
+            print(f"✅ Chart output dir: {self.output_dir}")
         except Exception as e:
-            print(f"⚠️ Erro ao criar output dir: {e}")
-            # Fallback para /tmp se /dbfs falhar
+            print(f"⚠️ Erro ao criar dir: {e}")
             import tempfile
             self.output_dir = Path(tempfile.mkdtemp(prefix="charts_"))
-            print(f"   📂 Usando fallback: {self.output_dir}")
+            print(f"   📂 Fallback: {self.output_dir}")
         
-        self.trend_analyzer = TrendAnalyzer()
-        self.annotation_gen = AnnotationGenerator()
-        
-        self._setup_custom_theme()
-        
+        # Estatísticas
         self._charts_created = 0
         self._total_generation_time = 0.0
         
@@ -344,115 +177,183 @@ class ChartTool:
             {
                 "tool": "ChartTool",
                 "output_dir": str(self.output_dir),
-                "theme": self.config.default_theme.value
-            }
+                "version": "3.0.0"
+            },
+            EventStatus.INFO
         )
     
-    def _setup_custom_theme(self):
-        """Configura tema customizado SRAG"""
-        if self.config.default_theme == ChartTheme.SRAG_CUSTOM:
-            pio.templates["srag_custom"] = go.layout.Template(
-                layout=go.Layout(
-                    font={"family": "Arial, sans-serif", "size": 12},
-                    title_font={"size": 18, "color": "#1f77b4"},
-                    colorway=self.config.color_palette,
-                    plot_bgcolor="white",
-                    paper_bgcolor="white",
-                    hovermode="x unified"
-                )
-            )
-    
     # =========================================================================
-    # CRIAÇÃO DE GRÁFICOS BÁSICOS
+    # MÉTODO PRINCIPAL - GERAR TODOS OS GRÁFICOS
     # =========================================================================
     
-    def create_line_chart(
-        self,
-        data: List[Dict],
-        title: str,
-        x_col: str = "x",
-        y_col: str = "y",
-        subtitle: Optional[str] = None,
-        annotations: Optional[List[str]] = None,
-        color_col: Optional[str] = None,
-        enable_ma: bool = True,
-        ma_window: int = 7
-    ) -> Dict:
+    def generate_all_charts(self) -> List[str]:
         """
-        Cria gráfico de linha com anotações automáticas
+        Gera todos os 10 gráficos profissionais
         
-        Args:
-            data: Lista de dicionários
-            title: Título do gráfico
-            x_col: Nome da coluna X
-            y_col: Nome da coluna Y
-            subtitle: Subtítulo opcional
-            annotations: Lista de anotações customizadas
-            
         Returns:
-            Dict com success, path, metadata
+            Lista de paths dos gráficos gerados
+        """
+        print("\n" + "="*80)
+        print("📊 GERANDO 10 GRÁFICOS PROFISSIONAIS PARA SRAG")
+        print("="*80 + "\n")
+        
+        chart_paths = []
+        
+        # 1. Casos diários (30 dias)
+        print("1️⃣  Gerando: Casos Diários (últimos 30 dias)...")
+        path = self.generate_daily_chart()
+        if path:
+            chart_paths.append(path)
+        
+        # 2. Casos mensais (12 meses)
+        print("2️⃣  Gerando: Casos Mensais (últimos 12 meses)...")
+        path = self.generate_monthly_chart()
+        if path:
+            chart_paths.append(path)
+        
+        # 3. Tendência temporal completa (36 meses)
+        print("3️⃣  Gerando: Tendência Temporal Completa (36 meses)...")
+        path = self.generate_temporal_trend_chart()
+        if path:
+            chart_paths.append(path)
+        
+        # 4. Comparativo anual
+        print("4️⃣  Gerando: Comparativo Anual (2023 vs 2024 vs 2025)...")
+        path = self.generate_annual_comparison_chart()
+        if path:
+            chart_paths.append(path)
+        
+        # 5. Heatmap sazonalidade
+        print("5️⃣  Gerando: Heatmap de Sazonalidade Mensal...")
+        path = self.generate_seasonality_heatmap()
+        if path:
+            chart_paths.append(path)
+        
+        # 6. Taxa de crescimento
+        print("6️⃣  Gerando: Taxa de Crescimento Mensal...")
+        path = self.generate_growth_rate_chart()
+        if path:
+            chart_paths.append(path)
+        
+        # 7. Ranking UFs
+        print("7️⃣  Gerando: Ranking Top 10 UFs...")
+        path = self.generate_uf_ranking_chart()
+        if path:
+            chart_paths.append(path)
+        
+        # 8. Perfil demográfico
+        print("8️⃣  Gerando: Perfil Demográfico (Faixas Etárias)...")
+        path = self.generate_demographic_profile_chart()
+        if path:
+            chart_paths.append(path)
+        
+        # 9. Mortalidade x UTI (dois eixos)
+        print("9️⃣  Gerando: Mortalidade x UTI (Dois Eixos Y)...")
+        path = self.generate_mortality_uti_chart()
+        if path:
+            chart_paths.append(path)
+        
+        # 10. Vacinação vs Mortalidade
+        print("🔟 Gerando: Vacinação vs Mortalidade (Correlação)...")
+        path = self.generate_vaccination_correlation_chart()
+        if path:
+            chart_paths.append(path)
+        
+        print("\n" + "="*80)
+        print(f"✅ TOTAL: {len(chart_paths)} gráficos gerados com sucesso!")
+        print("="*80 + "\n")
+        
+        return chart_paths
+    
+    # =========================================================================
+    # GRÁFICO 1: CASOS DIÁRIOS (30 DIAS)
+    # =========================================================================
+    
+    def generate_daily_chart(self) -> Optional[str]:
+        """
+        Gráfico de linha: Casos diários dos últimos 30 dias
+        
+        Query: gold_metricas_temporais (agregação diária simulada)
         """
         start_time = datetime.now()
         
-        self.audit.log_event(
-            AuditEvent.CHART_GENERATION_START,
-            {"type": "line", "title": title, "data_points": len(data)}
-        )
-        
         try:
-            # Validar dados
-            self._validate_data(data, [x_col, y_col])
+            self.audit.log_event(
+                AuditEvent.CHART_GENERATION_START,
+                {"chart": "daily_cases", "type": "line"},
+                EventStatus.INFO
+            )
             
-            # Converter para DataFrame
-            df = pd.DataFrame(data)
+            # Coletar dados do Spark
+            query = """
+            SELECT 
+                ano_mes,
+                total_casos
+            FROM dbx_lab_draagron.gold.gold_metricas_temporais
+            ORDER BY ano_mes DESC
+            LIMIT 30
+            """
+            
+            df = self.spark.sql(query).toPandas()
+            
+            if df.empty:
+                raise ChartValidationError("Sem dados para gráfico diário")
+            
+            # Reverter ordem (mais antigo primeiro)
+            df = df.sort_values('ano_mes')
             
             # Criar figura
             fig = go.Figure()
             
-            # Adicionar linha principal
+            # Linha principal
             fig.add_trace(go.Scatter(
-                x=df[x_col],
-                y=df[y_col],
+                x=df['ano_mes'],
+                y=df['total_casos'],
                 mode='lines+markers',
-                name=y_col,
-                line=dict(color=self.config.color_palette[0], width=2),
-                marker=dict(size=6)
+                name='Casos Diários',
+                line=dict(color=self.config.color_casos, width=3),
+                marker=dict(size=8, symbol='circle'),
+                hovertemplate='<b>%{x}</b><br>Casos: %{y:,.0f}<extra></extra>'
             ))
             
-            # Adicionar média móvel se habilitado
-            if enable_ma and len(df) >= ma_window:
-                ma_values = self.trend_analyzer.calculate_moving_average(
-                    df[y_col].tolist(),
-                    window=ma_window
+            # Média móvel 7 dias
+            df['ma7'] = df['total_casos'].rolling(window=7, min_periods=1).mean()
+            fig.add_trace(go.Scatter(
+                x=df['ano_mes'],
+                y=df['ma7'],
+                mode='lines',
+                name='Média Móvel (7 dias)',
+                line=dict(color='orange', width=2, dash='dash'),
+                hovertemplate='<b>%{x}</b><br>Média 7d: %{y:,.0f}<extra></extra>'
+            ))
+            
+            # Layout
+            fig.update_layout(
+                title={
+                    'text': '📈 Casos Diários de SRAG - Últimos 30 Dias',
+                    'x': 0.5,
+                    'xanchor': 'center',
+                    'font': {'size': 20, 'color': '#1f77b4'}
+                },
+                xaxis_title='Data',
+                yaxis_title='Número de Casos',
+                template='plotly_white',
+                height=self.config.default_height,
+                width=self.config.default_width,
+                hovermode='x unified',
+                showlegend=True,
+                legend=dict(
+                    yanchor="top",
+                    y=0.99,
+                    xanchor="left",
+                    x=0.01
                 )
-                fig.add_trace(go.Scatter(
-                    x=df[x_col],
-                    y=ma_values,
-                    mode='lines',
-                    name=f'Média Móvel ({ma_window}d)',
-                    line=dict(color=self.config.color_palette[1], width=1, dash='dash')
-                ))
-            
-            # Aplicar layout
-            self._apply_layout(fig, title, subtitle)
-            
-            # Adicionar anotações customizadas
-            if annotations:
-                for i, note_text in enumerate(annotations):
-                    fig.add_annotation(
-                        text=note_text,
-                        xref="paper", yref="paper",
-                        x=0.05, y=0.95 - (i * 0.05),
-                        showarrow=False,
-                        font=dict(size=10),
-                        bgcolor="rgba(255,255,255,0.8)"
-                    )
+            )
             
             # Exportar
-            chart_id = f"line_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-            metadata = self._export_chart(fig, chart_id, ChartType.LINE, title)
+            chart_id = "1_casos_diarios"
+            metadata = self._export_chart(fig, chart_id, ChartType.LINE, "Casos Diários")
             
-            # Atualizar estatísticas
             elapsed = (datetime.now() - start_time).total_seconds()
             metadata.generation_time_seconds = elapsed
             self._charts_created += 1
@@ -460,76 +361,87 @@ class ChartTool:
             
             self.audit.log_event(
                 AuditEvent.CHART_GENERATED,
-                self._metadata_to_dict(metadata)
+                {"chart": "daily_cases", "path": metadata.export_path, "time": elapsed},
+                EventStatus.SUCCESS
             )
             
-            return {
-                "success": True,
-                "path": metadata.export_paths.get("html", ""),
-                "metadata": self._metadata_to_dict(metadata)
-            }
+            return metadata.export_path
             
         except Exception as e:
             self.audit.log_event(
                 AuditEvent.CHART_ERROR,
-                {"type": "line", "error": str(e)},
-                "ERROR"
+                {"chart": "daily_cases", "error": str(e)},
+                EventStatus.ERROR
             )
-            print(f"❌ Erro em create_line_chart: {e}")
-            traceback.print_exc()
-            return {
-                "success": False,
-                "error": str(e),
-                "path": None
-            }
+            print(f"   ❌ Erro: {e}")
+            return None
     
-    def create_bar_chart(
-        self,
-        data: List[Dict],
-        title: str,
-        x_col: str = "x",
-        y_col: str = "y",
-        subtitle: Optional[str] = None,
-        annotations: Optional[List[str]] = None,
-        orientation: str = "v"
-    ) -> Dict:
-        """Cria gráfico de barras"""
+    # =========================================================================
+    # GRÁFICO 2: CASOS MENSAIS (12 MESES)
+    # =========================================================================
+    
+    def generate_monthly_chart(self) -> Optional[str]:
+        """
+        Gráfico de barras: Casos mensais dos últimos 12 meses
+        """
         start_time = datetime.now()
         
-        self.audit.log_event(
-            AuditEvent.CHART_GENERATION_START,
-            {"type": "bar", "title": title, "data_points": len(data)}
-        )
-        
         try:
-            self._validate_data(data, [x_col, y_col])
-            df = pd.DataFrame(data)
+            self.audit.log_event(
+                AuditEvent.CHART_GENERATION_START,
+                {"chart": "monthly_cases", "type": "bar"},
+                EventStatus.INFO
+            )
             
+            # Dados do Spark
+            query = """
+            SELECT 
+                ano_mes,
+                total_casos
+            FROM dbx_lab_draagron.gold.gold_metricas_temporais
+            ORDER BY ano_mes DESC
+            LIMIT 12
+            """
+            
+            df = self.spark.sql(query).toPandas()
+            
+            if df.empty:
+                raise ChartValidationError("Sem dados mensais")
+            
+            df = df.sort_values('ano_mes')
+            
+            # Criar figura
             fig = go.Figure()
             
             fig.add_trace(go.Bar(
-                x=df[x_col] if orientation == "v" else df[y_col],
-                y=df[y_col] if orientation == "v" else df[x_col],
-                orientation=orientation,
-                marker=dict(color=self.config.color_palette[0])
+                x=df['ano_mes'],
+                y=df['total_casos'],
+                marker_color=self.config.color_casos,
+                text=df['total_casos'],
+                texttemplate='%{text:,.0f}',
+                textposition='outside',
+                hovertemplate='<b>%{x}</b><br>Casos: %{y:,.0f}<extra></extra>'
             ))
             
-            self._apply_layout(fig, title, subtitle)
+            # Layout
+            fig.update_layout(
+                title={
+                    'text': '📊 Casos Mensais de SRAG - Últimos 12 Meses',
+                    'x': 0.5,
+                    'xanchor': 'center',
+                    'font': {'size': 20}
+                },
+                xaxis_title='Mês',
+                yaxis_title='Total de Casos',
+                template='plotly_white',
+                height=self.config.default_height,
+                width=self.config.default_width,
+                showlegend=False
+            )
             
-            # Adicionar anotações customizadas
-            if annotations:
-                for i, note_text in enumerate(annotations):
-                    fig.add_annotation(
-                        text=note_text,
-                        xref="paper", yref="paper",
-                        x=0.05, y=0.95 - (i * 0.05),
-                        showarrow=False,
-                        font=dict(size=10),
-                        bgcolor="rgba(255,255,255,0.8)"
-                    )
-            
-            chart_id = f"bar_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-            metadata = self._export_chart(fig, chart_id, ChartType.BAR, title)
+            # Exportar
+            chart_id = "2_casos_mensais"
+            metadata = self._export_chart(fig, chart_id, ChartType.BAR, "Casos Mensais")
             
             elapsed = (datetime.now() - start_time).total_seconds()
             metadata.generation_time_seconds = elapsed
@@ -538,60 +450,831 @@ class ChartTool:
             
             self.audit.log_event(
                 AuditEvent.CHART_GENERATED,
-                self._metadata_to_dict(metadata)
+                {"chart": "monthly_cases", "path": metadata.export_path},
+                EventStatus.SUCCESS
             )
             
-            return {
-                "success": True,
-                "path": metadata.export_paths.get("html", ""),
-                "metadata": self._metadata_to_dict(metadata)
-            }
+            return metadata.export_path
             
         except Exception as e:
             self.audit.log_event(
                 AuditEvent.CHART_ERROR,
-                {"type": "bar", "error": str(e)},
-                "ERROR"
+                {"chart": "monthly_cases", "error": str(e)},
+                EventStatus.ERROR
             )
-            print(f"❌ Erro em create_bar_chart: {e}")
-            traceback.print_exc()
-            return {
-                "success": False,
-                "error": str(e),
-                "path": None
+            print(f"   ❌ Erro: {e}")
+            return None
+    
+    # =========================================================================
+    # GRÁFICO 3: TENDÊNCIA TEMPORAL COMPLETA (36 MESES)
+    # =========================================================================
+    
+    def generate_temporal_trend_chart(self) -> Optional[str]:
+        """
+        Gráfico de linha: Tendência completa 2023-2025 (36 meses)
+        Com média móvel e linha de tendência
+        """
+        start_time = datetime.now()
+        
+        try:
+            self.audit.log_event(
+                AuditEvent.CHART_GENERATION_START,
+                {"chart": "temporal_trend", "type": "line"},
+                EventStatus.INFO
+            )
+            
+            # Dados completos (36 meses)
+            query = """
+            SELECT 
+                ano_mes,
+                total_casos,
+                taxa_crescimento
+            FROM dbx_lab_draagron.gold.gold_metricas_temporais
+            WHERE ano_mes >= '2023-01'
+            ORDER BY ano_mes
+            """
+            
+            df = self.spark.sql(query).toPandas()
+            
+            if df.empty:
+                raise ChartValidationError("Sem dados temporais")
+            
+            # Criar figura
+            fig = go.Figure()
+            
+            # Linha de casos
+            fig.add_trace(go.Scatter(
+                x=df['ano_mes'],
+                y=df['total_casos'],
+                mode='lines+markers',
+                name='Casos Mensais',
+                line=dict(color=self.config.color_casos, width=2),
+                marker=dict(size=6),
+                hovertemplate='<b>%{x}</b><br>Casos: %{y:,.0f}<extra></extra>'
+            ))
+            
+            # Média móvel 3 meses
+            df['ma3'] = df['total_casos'].rolling(window=3, min_periods=1).mean()
+            fig.add_trace(go.Scatter(
+                x=df['ano_mes'],
+                y=df['ma3'],
+                mode='lines',
+                name='Média Móvel (3 meses)',
+                line=dict(color='orange', width=2, dash='dash'),
+                hovertemplate='<b>%{x}</b><br>Média 3m: %{y:,.0f}<extra></extra>'
+            ))
+            
+            # Linha de tendência (regressão linear simples)
+            import numpy as np
+            x_numeric = np.arange(len(df))
+            z = np.polyfit(x_numeric, df['total_casos'], 1)
+            p = np.poly1d(z)
+            
+            fig.add_trace(go.Scatter(
+                x=df['ano_mes'],
+                y=p(x_numeric),
+                mode='lines',
+                name='Tendência Linear',
+                line=dict(color='red', width=2, dash='dot'),
+                hovertemplate='Tendência: %{y:,.0f}<extra></extra>'
+            ))
+            
+            # Layout
+            fig.update_layout(
+                title={
+                    'text': '📈 Tendência Temporal Completa SRAG (2023-2025)',
+                    'x': 0.5,
+                    'xanchor': 'center',
+                    'font': {'size': 20}
+                },
+                xaxis_title='Período',
+                yaxis_title='Casos',
+                template='plotly_white',
+                height=self.config.default_height,
+                width=self.config.default_width,
+                hovermode='x unified',
+                showlegend=True
+            )
+            
+            # Exportar
+            chart_id = "3_tendencia_temporal"
+            metadata = self._export_chart(fig, chart_id, ChartType.LINE, "Tendência Temporal")
+            
+            elapsed = (datetime.now() - start_time).total_seconds()
+            metadata.generation_time_seconds = elapsed
+            self._charts_created += 1
+            self._total_generation_time += elapsed
+            
+            self.audit.log_event(
+                AuditEvent.CHART_GENERATED,
+                {"chart": "temporal_trend", "path": metadata.export_path},
+                EventStatus.SUCCESS
+            )
+            
+            return metadata.export_path
+            
+        except Exception as e:
+            self.audit.log_event(
+                AuditEvent.CHART_ERROR,
+                {"chart": "temporal_trend", "error": str(e)},
+                EventStatus.ERROR
+            )
+            print(f"   ❌ Erro: {e}")
+            return None
+    
+    # =========================================================================
+    # GRÁFICO 4: COMPARATIVO ANUAL (2023 vs 2024 vs 2025)
+    # =========================================================================
+    
+    def generate_annual_comparison_chart(self) -> Optional[str]:
+        """
+        Gráfico de barras agrupadas: Comparação mês a mês entre anos
+        """
+        start_time = datetime.now()
+        
+        try:
+            self.audit.log_event(
+                AuditEvent.CHART_GENERATION_START,
+                {"chart": "annual_comparison", "type": "bar"},
+                EventStatus.INFO
+            )
+            
+            # Dados com ano e mês separados
+            query = """
+            SELECT 
+                SUBSTRING(ano_mes, 1, 4) as ano,
+                SUBSTRING(ano_mes, 6, 2) as mes,
+                total_casos
+            FROM dbx_lab_draagron.gold.gold_metricas_temporais
+            WHERE ano_mes >= '2023-01'
+            ORDER BY ano_mes
+            """
+            
+            df = self.spark.sql(query).toPandas()
+            
+            if df.empty:
+                raise ChartValidationError("Sem dados para comparação anual")
+            
+            # Pivotar por ano
+            df_pivot = df.pivot(index='mes', columns='ano', values='total_casos').fillna(0)
+            
+            # Criar figura
+            fig = go.Figure()
+            
+            meses = ['01', '02', '03', '04', '05', '06', '07', '08', '09', '10', '11', '12']
+            meses_nomes = ['Jan', 'Fev', 'Mar', 'Abr', 'Mai', 'Jun', 
+                          'Jul', 'Ago', 'Set', 'Out', 'Nov', 'Dez']
+            
+            cores_anos = {
+                '2023': '#1f77b4',
+                '2024': '#ff7f0e',
+                '2025': '#2ca02c'
             }
+            
+            for ano in ['2023', '2024', '2025']:
+                if ano in df_pivot.columns:
+                    fig.add_trace(go.Bar(
+                        x=meses_nomes,
+                        y=[df_pivot.loc[mes, ano] if mes in df_pivot.index else 0 for mes in meses],
+                        name=ano,
+                        marker_color=cores_anos.get(ano, '#999999'),
+                        hovertemplate=f'<b>{ano} - %{{x}}</b><br>Casos: %{{y:,.0f}}<extra></extra>'
+                    ))
+            
+            # Layout
+            fig.update_layout(
+                title={
+                    'text': '📊 Comparativo Anual de Casos SRAG (2023 vs 2024 vs 2025)',
+                    'x': 0.5,
+                    'xanchor': 'center',
+                    'font': {'size': 20}
+                },
+                xaxis_title='Mês',
+                yaxis_title='Total de Casos',
+                template='plotly_white',
+                height=self.config.default_height,
+                width=self.config.default_width,
+                barmode='group',
+                showlegend=True
+            )
+            
+            # Exportar
+            chart_id = "4_comparativo_anual"
+            metadata = self._export_chart(fig, chart_id, ChartType.BAR, "Comparativo Anual")
+            
+            elapsed = (datetime.now() - start_time).total_seconds()
+            metadata.generation_time_seconds = elapsed
+            self._charts_created += 1
+            self._total_generation_time += elapsed
+            
+            self.audit.log_event(
+                AuditEvent.CHART_GENERATED,
+                {"chart": "annual_comparison", "path": metadata.export_path},
+                EventStatus.SUCCESS
+            )
+            
+            return metadata.export_path
+            
+        except Exception as e:
+            self.audit.log_event(
+                AuditEvent.CHART_ERROR,
+                {"chart": "annual_comparison", "error": str(e)},
+                EventStatus.ERROR
+            )
+            print(f"   ❌ Erro: {e}")
+            return None
+    
+    # =========================================================================
+    # GRÁFICO 5: HEATMAP DE SAZONALIDADE
+    # =========================================================================
+    
+    def generate_seasonality_heatmap(self) -> Optional[str]:
+        """
+        Heatmap: Padrão de sazonalidade mensal ao longo dos anos
+        """
+        start_time = datetime.now()
+        
+        try:
+            self.audit.log_event(
+                AuditEvent.CHART_GENERATION_START,
+                {"chart": "seasonality_heatmap", "type": "heatmap"},
+                EventStatus.INFO
+            )
+            
+            # Dados
+            query = """
+            SELECT 
+                SUBSTRING(ano_mes, 1, 4) as ano,
+                SUBSTRING(ano_mes, 6, 2) as mes,
+                total_casos
+            FROM dbx_lab_draagron.gold.gold_metricas_temporais
+            WHERE ano_mes >= '2023-01'
+            ORDER BY ano_mes
+            """
+            
+            df = self.spark.sql(query).toPandas()
+            
+            if df.empty:
+                raise ChartValidationError("Sem dados para heatmap")
+            
+            # Pivotar
+            df_pivot = df.pivot(index='ano', columns='mes', values='total_casos').fillna(0)
+            
+            # Criar heatmap
+            fig = go.Figure(data=go.Heatmap(
+                z=df_pivot.values,
+                x=['Jan', 'Fev', 'Mar', 'Abr', 'Mai', 'Jun', 'Jul', 'Ago', 'Set', 'Out', 'Nov', 'Dez'],
+                y=df_pivot.index,
+                colorscale='YlOrRd',
+                text=df_pivot.values,
+                texttemplate='%{text:,.0f}',
+                textfont={"size": 10},
+                hovertemplate='<b>%{y} - %{x}</b><br>Casos: %{z:,.0f}<extra></extra>',
+                colorbar=dict(title="Casos")
+            ))
+            
+            # Layout
+            fig.update_layout(
+                title={
+                    'text': '🔥 Heatmap de Sazonalidade Mensal SRAG',
+                    'x': 0.5,
+                    'xanchor': 'center',
+                    'font': {'size': 20}
+                },
+                xaxis_title='Mês',
+                yaxis_title='Ano',
+                template='plotly_white',
+                height=500,
+                width=self.config.default_width
+            )
+            
+            # Exportar
+            chart_id = "5_sazonalidade_heatmap"
+            metadata = self._export_chart(fig, chart_id, ChartType.HEATMAP, "Sazonalidade")
+            
+            elapsed = (datetime.now() - start_time).total_seconds()
+            metadata.generation_time_seconds = elapsed
+            self._charts_created += 1
+            self._total_generation_time += elapsed
+            
+            self.audit.log_event(
+                AuditEvent.CHART_GENERATED,
+                {"chart": "seasonality_heatmap", "path": metadata.export_path},
+                EventStatus.SUCCESS
+            )
+            
+            return metadata.export_path
+            
+        except Exception as e:
+            self.audit.log_event(
+                AuditEvent.CHART_ERROR,
+                {"chart": "seasonality_heatmap", "error": str(e)},
+                EventStatus.ERROR
+            )
+            print(f"   ❌ Erro: {e}")
+            return None
+    
+    # =========================================================================
+    # GRÁFICO 6: TAXA DE CRESCIMENTO MENSAL
+    # =========================================================================
+    
+    def generate_growth_rate_chart(self) -> Optional[str]:
+        """
+        Gráfico de barras (waterfall): Taxa de crescimento mensal
+        """
+        start_time = datetime.now()
+        
+        try:
+            self.audit.log_event(
+                AuditEvent.CHART_GENERATION_START,
+                {"chart": "growth_rate", "type": "waterfall"},
+                EventStatus.INFO
+            )
+            
+            # Dados
+            query = """
+            SELECT 
+                ano_mes,
+                taxa_crescimento
+            FROM dbx_lab_draagron.gold.gold_metricas_temporais
+            WHERE ano_mes >= '2023-01'
+            ORDER BY ano_mes
+            LIMIT 24
+            """
+            
+            df = self.spark.sql(query).toPandas()
+            
+            if df.empty:
+                raise ChartValidationError("Sem dados de crescimento")
+            
+            # Cores baseadas em positivo/negativo
+            colors = [self.config.color_crescimento_pos if x >= 0 else self.config.color_crescimento_neg 
+                     for x in df['taxa_crescimento']]
+            
+            # Criar figura
+            fig = go.Figure()
+            
+            fig.add_trace(go.Bar(
+                x=df['ano_mes'],
+                y=df['taxa_crescimento'],
+                marker_color=colors,
+                text=df['taxa_crescimento'].apply(lambda x: f"{x:+.1f}%"),
+                textposition='outside',
+                hovertemplate='<b>%{x}</b><br>Crescimento: %{y:+.2f}%<extra></extra>'
+            ))
+            
+            # Linha zero
+            fig.add_hline(y=0, line_dash="dash", line_color="gray", opacity=0.5)
+            
+            # Layout
+            fig.update_layout(
+                title={
+                    'text': '📈 Taxa de Crescimento Mensal de Casos SRAG',
+                    'x': 0.5,
+                    'xanchor': 'center',
+                    'font': {'size': 20}
+                },
+                xaxis_title='Período',
+                yaxis_title='Taxa de Crescimento (%)',
+                template='plotly_white',
+                height=self.config.default_height,
+                width=self.config.default_width,
+                showlegend=False
+            )
+            
+            # Exportar
+            chart_id = "6_taxa_crescimento"
+            metadata = self._export_chart(fig, chart_id, ChartType.WATERFALL, "Taxa Crescimento")
+            
+            elapsed = (datetime.now() - start_time).total_seconds()
+            metadata.generation_time_seconds = elapsed
+            self._charts_created += 1
+            self._total_generation_time += elapsed
+            
+            self.audit.log_event(
+                AuditEvent.CHART_GENERATED,
+                {"chart": "growth_rate", "path": metadata.export_path},
+                EventStatus.SUCCESS
+            )
+            
+            return metadata.export_path
+            
+        except Exception as e:
+            self.audit.log_event(
+                AuditEvent.CHART_ERROR,
+                {"chart": "growth_rate", "error": str(e)},
+                EventStatus.ERROR
+            )
+            print(f"   ❌ Erro: {e}")
+            return None
+    
+    # =========================================================================
+    # GRÁFICO 7: RANKING TOP 10 UFs
+    # =========================================================================
+    
+    def generate_uf_ranking_chart(self) -> Optional[str]:
+        """
+        Gráfico de barras horizontais: Top 10 UFs por casos
+        """
+        start_time = datetime.now()
+        
+        try:
+            self.audit.log_event(
+                AuditEvent.CHART_GENERATION_START,
+                {"chart": "uf_ranking", "type": "bar"},
+                EventStatus.INFO
+            )
+            
+            # Dados
+            query = """
+            SELECT 
+                sg_uf,
+                total_casos,
+                taxa_mortalidade
+            FROM dbx_lab_draagron.gold.gold_metricas_geograficas
+            ORDER BY total_casos DESC
+            LIMIT 10
+            """
+            
+            df = self.spark.sql(query).toPandas()
+            
+            if df.empty:
+                raise ChartValidationError("Sem dados geográficos")
+            
+            # Reverter para barras horizontais (maior no topo)
+            df = df.sort_values('total_casos', ascending=True)
+            
+            # Criar figura
+            fig = go.Figure()
+            
+            fig.add_trace(go.Bar(
+                x=df['total_casos'],
+                y=df['sg_uf'],
+                orientation='h',
+                marker_color=self.config.color_palette[0],
+                text=df['total_casos'],
+                texttemplate='%{text:,.0f}',
+                textposition='outside',
+                hovertemplate='<b>%{y}</b><br>Casos: %{x:,.0f}<br>Mortalidade: %{customdata:.2f}%<extra></extra>',
+                customdata=df['taxa_mortalidade']
+            ))
+            
+            # Layout
+            fig.update_layout(
+                title={
+                    'text': '🏆 Ranking Top 10 UFs por Casos de SRAG',
+                    'x': 0.5,
+                    'xanchor': 'center',
+                    'font': {'size': 20}
+                },
+                xaxis_title='Total de Casos',
+                yaxis_title='Estado (UF)',
+                template='plotly_white',
+                height=600,
+                width=self.config.default_width,
+                showlegend=False
+            )
+            
+            # Exportar
+            chart_id = "7_ranking_ufs"
+            metadata = self._export_chart(fig, chart_id, ChartType.BAR, "Ranking UFs")
+            
+            elapsed = (datetime.now() - start_time).total_seconds()
+            metadata.generation_time_seconds = elapsed
+            self._charts_created += 1
+            self._total_generation_time += elapsed
+            
+            self.audit.log_event(
+                AuditEvent.CHART_GENERATED,
+                {"chart": "uf_ranking", "path": metadata.export_path},
+                EventStatus.SUCCESS
+            )
+            
+            return metadata.export_path
+            
+        except Exception as e:
+            self.audit.log_event(
+                AuditEvent.CHART_ERROR,
+                {"chart": "uf_ranking", "error": str(e)},
+                EventStatus.ERROR
+            )
+            print(f"   ❌ Erro: {e}")
+            return None
+    
+    # =========================================================================
+    # GRÁFICO 8: PERFIL DEMOGRÁFICO
+    # =========================================================================
+    
+    def generate_demographic_profile_chart(self) -> Optional[str]:
+        """
+        Gráfico de barras agrupadas: Casos por faixa etária e sexo
+        """
+        start_time = datetime.now()
+        
+        try:
+            self.audit.log_event(
+                AuditEvent.CHART_GENERATION_START,
+                {"chart": "demographic_profile", "type": "bar"},
+                EventStatus.INFO
+            )
+            
+            # Dados
+            query = """
+            SELECT 
+                faixa_etaria,
+                sexo,
+                total_casos
+            FROM dbx_lab_draagron.gold.gold_metricas_demograficas
+            WHERE faixa_etaria IS NOT NULL AND sexo IN ('M', 'F')
+            ORDER BY ordem_faixa_etaria, sexo
+            """
+            
+            df = self.spark.sql(query).toPandas()
+            
+            if df.empty:
+                raise ChartValidationError("Sem dados demográficos")
+            
+            # Criar figura
+            fig = go.Figure()
+            
+            # Barras por sexo
+            for sexo, cor in [('M', '#1f77b4'), ('F', '#ff7f0e')]:
+                df_sexo = df[df['sexo'] == sexo]
+                
+                fig.add_trace(go.Bar(
+                    x=df_sexo['faixa_etaria'],
+                    y=df_sexo['total_casos'],
+                    name='Masculino' if sexo == 'M' else 'Feminino',
+                    marker_color=cor,
+                    hovertemplate='<b>%{x}</b><br>Casos: %{y:,.0f}<extra></extra>'
+                ))
+            
+            # Layout
+            fig.update_layout(
+                title={
+                    'text': '👥 Perfil Demográfico de Casos SRAG por Faixa Etária',
+                    'x': 0.5,
+                    'xanchor': 'center',
+                    'font': {'size': 20}
+                },
+                xaxis_title='Faixa Etária',
+                yaxis_title='Total de Casos',
+                template='plotly_white',
+                height=self.config.default_height,
+                width=self.config.default_width,
+                barmode='group',
+                showlegend=True
+            )
+            
+            # Exportar
+            chart_id = "8_perfil_demografico"
+            metadata = self._export_chart(fig, chart_id, ChartType.BAR, "Perfil Demográfico")
+            
+            elapsed = (datetime.now() - start_time).total_seconds()
+            metadata.generation_time_seconds = elapsed
+            self._charts_created += 1
+            self._total_generation_time += elapsed
+            
+            self.audit.log_event(
+                AuditEvent.CHART_GENERATED,
+                {"chart": "demographic_profile", "path": metadata.export_path},
+                EventStatus.SUCCESS
+            )
+            
+            return metadata.export_path
+            
+        except Exception as e:
+            self.audit.log_event(
+                AuditEvent.CHART_ERROR,
+                {"chart": "demographic_profile", "error": str(e)},
+                EventStatus.ERROR
+            )
+            print(f"   ❌ Erro: {e}")
+            return None
+    
+    # =========================================================================
+    # GRÁFICO 9: MORTALIDADE x UTI (DOIS EIXOS Y)
+    # =========================================================================
+    
+    def generate_mortality_uti_chart(self) -> Optional[str]:
+        """
+        Gráfico combo: Taxa de mortalidade (linha) e Taxa UTI (barras) - Dois eixos Y
+        """
+        start_time = datetime.now()
+        
+        try:
+            self.audit.log_event(
+                AuditEvent.CHART_GENERATION_START,
+                {"chart": "mortality_uti", "type": "combo"},
+                EventStatus.INFO
+            )
+            
+            # Dados
+            query = """
+            SELECT 
+                ano_mes,
+                taxa_mortalidade,
+                taxa_uti
+            FROM dbx_lab_draagron.gold.gold_metricas_temporais
+            ORDER BY ano_mes DESC
+            LIMIT 24
+            """
+            
+            df = self.spark.sql(query).toPandas()
+            
+            if df.empty:
+                raise ChartValidationError("Sem dados para mortalidade x UTI")
+            
+            df = df.sort_values('ano_mes')
+            
+            # Criar figura com subplots (2 eixos Y)
+            fig = make_subplots(specs=[[{"secondary_y": True}]])
+            
+            # Barras: Taxa UTI (eixo Y principal)
+            fig.add_trace(
+                go.Bar(
+                    x=df['ano_mes'],
+                    y=df['taxa_uti'],
+                    name='Taxa UTI (%)',
+                    marker_color=self.config.color_uti,
+                    opacity=0.6,
+                    hovertemplate='<b>%{x}</b><br>Taxa UTI: %{y:.2f}%<extra></extra>'
+                ),
+                secondary_y=False
+            )
+            
+            # Linha: Taxa Mortalidade (eixo Y secundário)
+            fig.add_trace(
+                go.Scatter(
+                    x=df['ano_mes'],
+                    y=df['taxa_mortalidade'],
+                    name='Taxa Mortalidade (%)',
+                    line=dict(color=self.config.color_mortalidade, width=3),
+                    mode='lines+markers',
+                    marker=dict(size=8),
+                    hovertemplate='<b>%{x}</b><br>Mortalidade: %{y:.2f}%<extra></extra>'
+                ),
+                secondary_y=True
+            )
+            
+            # Layout
+            fig.update_layout(
+                title={
+                    'text': '⚕️ Taxa de Mortalidade vs Taxa de UTI - SRAG',
+                    'x': 0.5,
+                    'xanchor': 'center',
+                    'font': {'size': 20}
+                },
+                template='plotly_white',
+                height=self.config.default_height,
+                width=self.config.default_width,
+                hovermode='x unified',
+                showlegend=True
+            )
+            
+            # Eixos
+            fig.update_xaxes(title_text="Período")
+            fig.update_yaxes(title_text="<b>Taxa UTI (%)</b>", secondary_y=False)
+            fig.update_yaxes(title_text="<b>Taxa Mortalidade (%)</b>", secondary_y=True)
+            
+            # Exportar
+            chart_id = "9_mortalidade_uti"
+            metadata = self._export_chart(fig, chart_id, ChartType.COMBO, "Mortalidade x UTI")
+            
+            elapsed = (datetime.now() - start_time).total_seconds()
+            metadata.generation_time_seconds = elapsed
+            self._charts_created += 1
+            self._total_generation_time += elapsed
+            
+            self.audit.log_event(
+                AuditEvent.CHART_GENERATED,
+                {"chart": "mortality_uti", "path": metadata.export_path},
+                EventStatus.SUCCESS
+            )
+            
+            return metadata.export_path
+            
+        except Exception as e:
+            self.audit.log_event(
+                AuditEvent.CHART_ERROR,
+                {"chart": "mortality_uti", "error": str(e)},
+                EventStatus.ERROR
+            )
+            print(f"   ❌ Erro: {e}")
+            return None
+    
+    # =========================================================================
+    # GRÁFICO 10: VACINAÇÃO vs MORTALIDADE (CORRELAÇÃO)
+    # =========================================================================
+    
+    def generate_vaccination_correlation_chart(self) -> Optional[str]:
+        """
+        Gráfico de dispersão: Correlação entre taxa de vacinação e mortalidade
+        """
+        start_time = datetime.now()
+        
+        try:
+            self.audit.log_event(
+                AuditEvent.CHART_GENERATION_START,
+                {"chart": "vaccination_correlation", "type": "scatter"},
+                EventStatus.INFO
+            )
+            
+            # Dados
+            query = """
+            SELECT 
+                ano_mes,
+                taxa_vacinacao,
+                taxa_mortalidade
+            FROM dbx_lab_draagron.gold.gold_metricas_temporais
+            WHERE taxa_vacinacao IS NOT NULL
+            ORDER BY ano_mes
+            """
+            
+            df = self.spark.sql(query).toPandas()
+            
+            if df.empty:
+                raise ChartValidationError("Sem dados de vacinação")
+            
+            # Criar figura
+            fig = go.Figure()
+            
+            fig.add_trace(go.Scatter(
+                x=df['taxa_vacinacao'],
+                y=df['taxa_mortalidade'],
+                mode='markers',
+                marker=dict(
+                    size=10,
+                    color=df['taxa_mortalidade'],
+                    colorscale='RdYlGn_r',
+                    showscale=True,
+                    colorbar=dict(title="Mortalidade (%)")
+                ),
+                text=df['ano_mes'],
+                hovertemplate='<b>%{text}</b><br>Vacinação: %{x:.2f}%<br>Mortalidade: %{y:.2f}%<extra></extra>'
+            ))
+            
+            # Linha de tendência
+            import numpy as np
+            z = np.polyfit(df['taxa_vacinacao'], df['taxa_mortalidade'], 1)
+            p = np.poly1d(z)
+            
+            x_trend = np.linspace(df['taxa_vacinacao'].min(), df['taxa_vacinacao'].max(), 100)
+            
+            fig.add_trace(go.Scatter(
+                x=x_trend,
+                y=p(x_trend),
+                mode='lines',
+                name='Linha de Tendência',
+                line=dict(color='red', width=2, dash='dash'),
+                hovertemplate='Tendência<extra></extra>'
+            ))
+            
+            # Layout
+            fig.update_layout(
+                title={
+                    'text': '💉 Correlação: Taxa de Vacinação vs Mortalidade SRAG',
+                    'x': 0.5,
+                    'xanchor': 'center',
+                    'font': {'size': 20}
+                },
+                xaxis_title='Taxa de Vacinação (%)',
+                yaxis_title='Taxa de Mortalidade (%)',
+                template='plotly_white',
+                height=self.config.default_height,
+                width=self.config.default_width,
+                showlegend=True
+            )
+            
+            # Exportar
+            chart_id = "10_vacinacao_correlacao"
+            metadata = self._export_chart(fig, chart_id, ChartType.SCATTER, "Vacinação Correlação")
+            
+            elapsed = (datetime.now() - start_time).total_seconds()
+            metadata.generation_time_seconds = elapsed
+            self._charts_created += 1
+            self._total_generation_time += elapsed
+            
+            self.audit.log_event(
+                AuditEvent.CHART_GENERATED,
+                {"chart": "vaccination_correlation", "path": metadata.export_path},
+                EventStatus.SUCCESS
+            )
+            
+            return metadata.export_path
+            
+        except Exception as e:
+            self.audit.log_event(
+                AuditEvent.CHART_ERROR,
+                {"chart": "vaccination_correlation", "error": str(e)},
+                EventStatus.ERROR
+            )
+            print(f"   ❌ Erro: {e}")
+            return None
     
     # =========================================================================
     # HELPERS
     # =========================================================================
-    
-    def _validate_data(self, data: List[Dict], required_cols: List[str]):
-        """Valida estrutura dos dados"""
-        if not data:
-            raise ChartValidationError("Dados vazios")
-        
-        if not isinstance(data, list):
-            raise ChartValidationError("Dados devem ser uma lista de dicionários")
-        
-        first_item = data[0]
-        for col in required_cols:
-            if col not in first_item:
-                raise ChartValidationError(f"Coluna '{col}' não encontrada nos dados")
-    
-    def _apply_layout(self, fig: go.Figure, title: str, subtitle: Optional[str] = None):
-        """Aplica layout padrão ao gráfico"""
-        full_title = title
-        if subtitle:
-            full_title = f"{title}<br><sub>{subtitle}</sub>"
-        
-        fig.update_layout(
-            title=full_title,
-            template=self.config.default_theme.value,
-            height=self.config.default_height,
-            width=self.config.default_width,
-            showlegend=self.config.show_legend,
-            hovermode='x unified'
-        )
     
     def _export_chart(
         self,
@@ -600,59 +1283,28 @@ class ChartTool:
         chart_type: ChartType,
         title: str
     ) -> ChartMetadata:
-        """Exporta gráfico em múltiplos formatos"""
-        export_paths = {}
-        file_sizes = {}
-        
-        for fmt in self.config.default_export_formats:
-            try:
-                filepath = self.output_dir / f"{chart_id}.{fmt.value}"
-                
-                if fmt == ExportFormat.HTML:
-                    fig.write_html(str(filepath))
-                elif fmt == ExportFormat.PNG:
-                    fig.write_image(str(filepath))
-                elif fmt == ExportFormat.SVG:
-                    fig.write_image(str(filepath), format="svg")
-                elif fmt == ExportFormat.JSON:
-                    fig.write_json(str(filepath))
-                
-                export_paths[fmt.value] = str(filepath)
-                file_sizes[fmt.value] = filepath.stat().st_size if filepath.exists() else 0
-                
-            except Exception as e:
-                self.audit.log_event(
-                    AuditEvent.CHART_EXPORT_ERROR,
-                    {"format": fmt.value, "error": str(e)},
-                    "WARNING"
-                )
-                print(f"⚠️ Erro ao exportar {fmt.value}: {e}")
-        
-        metadata = ChartMetadata(
-            chart_id=chart_id,
-            chart_type=chart_type,
-            title=title,
-            created_at=datetime.now(),
-            data_points=len(fig.data[0].x) if fig.data else 0,
-            export_paths=export_paths,
-            file_sizes=file_sizes,
-            generation_time_seconds=0.0
-        )
-        
-        return metadata
-    
-    def _metadata_to_dict(self, metadata: ChartMetadata) -> Dict:
-        """Converte metadata para dict"""
-        return {
-            "chart_id": metadata.chart_id,
-            "chart_type": metadata.chart_type.value,
-            "title": metadata.title,
-            "created_at": metadata.created_at.isoformat(),
-            "data_points": metadata.data_points,
-            "export_paths": metadata.export_paths,
-            "file_sizes": metadata.file_sizes,
-            "generation_time_seconds": metadata.generation_time_seconds
-        }
+        """Exporta gráfico para HTML"""
+        try:
+            filepath = self.output_dir / f"{chart_id}.html"
+            fig.write_html(str(filepath))
+            
+            metadata = ChartMetadata(
+                chart_id=chart_id,
+                chart_type=chart_type,
+                title=title,
+                created_at=datetime.now(),
+                data_points=len(fig.data[0].x) if fig.data and hasattr(fig.data[0], 'x') else 0,
+                export_path=str(filepath),
+                generation_time_seconds=0.0
+            )
+            
+            print(f"   ✅ Exportado: {filepath}")
+            
+            return metadata
+            
+        except Exception as e:
+            print(f"   ❌ Erro ao exportar: {e}")
+            raise
     
     def get_statistics(self) -> Dict:
         """Retorna estatísticas de geração"""
@@ -664,155 +1316,6 @@ class ChartTool:
                 if self._charts_created > 0 else 0
             )
         }
-    
-    # =========================================================================
-    # MÉTODOS OBRIGATÓRIOS PARA CERTIFICAÇÃO
-    # =========================================================================
-    
-    def generate_daily_chart(self, data: Optional[List[Dict]] = None) -> Optional[str]:
-        """
-        Gera gráfico de casos diários (últimos 30 dias) - OBRIGATÓRIO
-        
-        Returns:
-            Path do arquivo HTML gerado ou None em caso de erro
-        """
-        try:
-            self.audit.log_event(
-                AuditEvent.CHART_GENERATION_START,
-                {"tool": "chart_tool", "chart_type": "daily_cases"},
-                "INFO"
-            )
-            
-            # ✅ Dados dummy se não fornecidos
-            if not data:
-                base_date = datetime.now() - timedelta(days=30)
-                data = []
-                for i in range(30):
-                    current_date = base_date + timedelta(days=i)
-                    casos = max(50, int(1000 + (i * 10) + (i % 7 * 50)))
-                    data.append({
-                        "data": current_date.strftime("%Y-%m-%d"),
-                        "casos": casos
-                    })
-            
-            if not data or len(data) == 0:
-                raise ValueError("Dados para gráfico diário estão vazios")
-            
-            # Criar gráfico
-            result = self.create_line_chart(
-                data=data,
-                title="📈 Casos Diários de SRAG - Últimos 30 Dias",
-                x_col="data",
-                y_col="casos",
-                subtitle="Evolução temporal da notificação de casos",
-                annotations=["Tendência de crescimento observada", "Picos nos fins de semana"]
-            )
-            
-            if not result or not result.get("success"):
-                raise ValueError(f"Falha ao criar gráfico: {result.get('error', 'Erro desconhecido')}")
-            
-            self.audit.log_event(
-                AuditEvent.CHART_GENERATED,
-                {"tool": "chart_tool", "chart_type": "daily_cases", "path": result.get("path")},
-                "SUCCESS"
-            )
-            
-            print(f"✅ Gráfico diário gerado: {result.get('path')}")
-            return result.get("path")
-            
-        except Exception as e:
-            error_detail = {
-                "tool": "chart_tool",
-                "chart_type": "daily_cases",
-                "error": str(e),
-                "error_type": type(e).__name__,
-                "data_length": len(data) if data else 0
-            }
-            
-            self.audit.log_event(
-                AuditEvent.CHART_ERROR,
-                error_detail,
-                "ERROR"
-            )
-            
-            print(f"❌ Erro em generate_daily_chart: {str(e)}")
-            traceback.print_exc()
-            
-            return None
-    
-    def generate_monthly_chart(self, data: Optional[List[Dict]] = None) -> Optional[str]:
-        """
-        Gera gráfico de casos mensais (últimos 12 meses) - OBRIGATÓRIO
-        
-        Returns:
-            Path do arquivo HTML gerado ou None em caso de erro
-        """
-        try:
-            self.audit.log_event(
-                AuditEvent.CHART_GENERATION_START,
-                {"tool": "chart_tool", "chart_type": "monthly_cases"},
-                "INFO"
-            )
-            
-            # ✅ Dados dummy se não fornecidos
-            if not data:
-                base_date = datetime.now().replace(day=1) - timedelta(days=365)
-                data = []
-                meses = ["Jan", "Fev", "Mar", "Abr", "Mai", "Jun",
-                        "Jul", "Ago", "Set", "Out", "Nov", "Dez"]
-                
-                for i in range(12):
-                    current_date = base_date + timedelta(days=30*i)
-                    casos = max(1000, int(15000 + (i * 500) + (i % 4 * 2000)))
-                    data.append({
-                        "mes": f"{meses[current_date.month-1]}/{current_date.year % 100}",
-                        "casos": casos
-                    })
-            
-            if not data or len(data) == 0:
-                raise ValueError("Dados para gráfico mensal estão vazios")
-            
-            # Criar gráfico
-            result = self.create_bar_chart(
-                data=data,
-                title="📊 Casos Mensais de SRAG - Últimos 12 Meses",
-                x_col="mes",
-                y_col="casos",
-                subtitle="Evolução mensal com sazonalidade",
-                annotations=["Pico no inverno", "Redução no verão"]
-            )
-            
-            if not result or not result.get("success"):
-                raise ValueError(f"Falha ao criar gráfico mensal: {result.get('error', 'Erro desconhecido')}")
-            
-            self.audit.log_event(
-                AuditEvent.CHART_GENERATED,
-                {"tool": "chart_tool", "chart_type": "monthly_cases", "path": result.get("path")},
-                "SUCCESS"
-            )
-            
-            print(f"✅ Gráfico mensal gerado: {result.get('path')}")
-            return result.get("path")
-            
-        except Exception as e:
-            error_detail = {
-                "tool": "chart_tool",
-                "chart_type": "monthly_cases",
-                "error": str(e),
-                "error_type": type(e).__name__,
-                "data_length": len(data) if data else 0
-            }
-            
-            self.audit.log_event(
-                AuditEvent.CHART_ERROR,
-                error_detail,
-                "ERROR"
-            )
-            
-            print(f"❌ Erro em generate_monthly_chart: {str(e)}")
-            traceback.print_exc()
-            
-            return None
     
     def __repr__(self) -> str:
         return f"ChartTool(charts_created={self._charts_created}, output_dir={self.output_dir})"

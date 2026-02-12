@@ -117,7 +117,7 @@ class VectorStoreConfig:
     """Configuração do Vector Store - Databricks BGE optimized"""
     catalog: str = "dbx_lab_draagron"
     schema: str = "gold" 
-    index_name: str = "srag_embeddings_index_bge"  # BGE-specific index
+    index_name: str = "srag_embeddings_index"  # ✅ Nome simplificado
     endpoint_name: str = "srag_vector_endpoint"
     embedding_dim: int = 1024  # BGE Large dimension 
     primary_key: str = "doc_id"
@@ -127,13 +127,13 @@ class VectorStoreConfig:
 
 class DatabricksVectorStoreManager:
     """
-    Gerencia Databricks Vector Search
+    Gerencia Databricks Vector Search (VERSÃO CORRIGIDA)
     
     Workflow:
         1. Criar endpoint (se não existir)
         2. Criar tabela Delta com embeddings
-        3. Criar índice vetorial
-        4. Delta Sync automático
+        3. ✅ HABILITAR Change Data Feed automaticamente
+        4. Criar índice vetorial com Delta Sync
     
     Example:
         >>> manager = DatabricksVectorStoreManager(spark, config)
@@ -174,7 +174,8 @@ class DatabricksVectorStoreManager:
             1. Criar endpoint (se necessário)
             2. Preparar documentos com embeddings
             3. Salvar em Delta Table
-            4. Criar índice vetorial com Delta Sync
+            4. ✅ Habilitar Change Data Feed
+            5. Criar índice vetorial com Delta Sync
         
         Args:
             documents: Lista de documentos LangChain
@@ -205,7 +206,7 @@ class DatabricksVectorStoreManager:
     
     def create_or_load_index(self, documents: List[Document]) -> bool:
         """
-        Garante que o índice vetorial existe e está disponível
+        ✅ CORRIGIDO: Garante que o índice vetorial existe e está disponível
         
         Args:
             documents: Lista de documentos para criar o índice se necessário
@@ -214,31 +215,54 @@ class DatabricksVectorStoreManager:
             True se índice está pronto, False caso contrário
         """
         try:
-            # Estratégia defensiva: verificar diretamente se o índice existe
-            # sem usar list_indexes que tem assinaturas inconsistentes
-            print("🔧 Verificando se índice existe (verificação direta)...")
+            print("🔧 Verificando se índice existe...")
             
+            # Tentar acessar o índice diretamente
             try:
-                # Tentar acessar o índice diretamente com endpoint_name
                 index_info = self.client.get_index(
                     endpoint_name=self.config.endpoint_name,
                     index_name=self.full_index_name
                 )
-                # get_index retorna um objeto VectorSearchIndex, não dict
-                if index_info and hasattr(index_info, 'name') and index_info.name == self.full_index_name:
-                    print(f"✅ Índice vetorial já existe: {self.full_index_name}")
-                    return True
-            except Exception as get_error:
-                # Se get_index falhar, provavelmente o índice não existe
-                print(f"🔄 Índice não encontrado (erro esperado): {get_error}")
                 
-            # Se chegou aqui, o índice não existe - criar
-            print(f"🔄 Criando novo índice: {self.full_index_name}")
+                # Verificar se o objeto retornado é válido
+                if index_info and hasattr(index_info, 'name'):
+                    print(f"✅ Índice vetorial já existe: {self.full_index_name}")
+                    
+                    # Verificar status do índice
+                    try:
+                        status = getattr(index_info, 'status', {})
+                        state = status.get('detailed_state', 'UNKNOWN') if isinstance(status, dict) else str(status)
+                        print(f"   📊 Status do índice: {state}")
+                        
+                        # Se índice existe mas está com erro, recriar
+                        if 'FAILED' in str(state).upper() or 'ERROR' in str(state).upper():
+                            print(f"   ⚠️ Índice em estado de erro, recriando...")
+                            self.client.delete_index(index_name=self.full_index_name)
+                            time.sleep(5)
+                            raise Exception("Índice estava com erro, forçando recriação")
+                        
+                    except Exception as status_error:
+                        print(f"   ⚠️ Não foi possível verificar status: {status_error}")
+                    
+                    return True
+                    
+            except Exception as get_error:
+                error_msg = str(get_error).lower()
+                if 'does not exist' in error_msg or 'not found' in error_msg:
+                    print(f"🔄 Índice não encontrado, criando novo...")
+                else:
+                    print(f"⚠️ Erro ao verificar índice: {get_error}")
+                    print("🔄 Tentando criar índice...")
+            
+            # Se chegou aqui, criar novo índice
+            print(f"🔧 Criando novo índice: {self.full_index_name}")
             self.create_vector_index(documents, recreate=False)
             return True
             
         except Exception as e:
-            print(f"❌ Erro ao verificar/criar índice: {e}")
+            print(f"❌ Erro crítico ao verificar/criar índice: {e}")
+            import traceback
+            print(f"   Stack trace:\n{traceback.format_exc()}")
             return False
     
     def _ensure_endpoint_exists(self) -> None:
@@ -339,7 +363,7 @@ class DatabricksVectorStoreManager:
                         raise
                     break
         
-        # 1️⃣ AJUSTE DE ROBUSTEZ: Validar dimensão dos embeddings
+        # Validar dimensão dos embeddings
         if embeddings_vectors:
             actual_dim = len(embeddings_vectors[0])
             expected_dim = self.config.embedding_dim
@@ -391,7 +415,7 @@ class DatabricksVectorStoreManager:
         return df
     
     def _save_to_delta(self, df: 'pd.DataFrame', recreate: bool = False) -> None:
-        """Salva DataFrame em Delta Table com otimizações"""
+        """✅ CORRIGIDO: Salva DataFrame em Delta Table com Change Data Feed"""
         if df.empty:
             raise ValueError("DataFrame está vazio")
         
@@ -415,7 +439,7 @@ class DatabricksVectorStoreManager:
             writer = writer.option("delta.autoOptimize.optimizeWrite", "true")
             writer = writer.option("delta.autoOptimize.autoCompact", "true")
             
-            # CORREÇÃO: Permitir evolução de schema (void -> string)
+            # Permitir evolução de schema (void -> string)
             writer = writer.option("mergeSchema", "true")
             
             # Particionar por semantic_type se recreating
@@ -424,6 +448,18 @@ class DatabricksVectorStoreManager:
             
             # Executar escrita
             writer.saveAsTable(table_name)
+            
+            # ✅ CORREÇÃO 1: Habilitar Change Data Feed IMEDIATAMENTE após criar tabela
+            try:
+                print(f"   🔧 Habilitando Change Data Feed...")
+                self.spark.sql(f"""
+                    ALTER TABLE {table_name} 
+                    SET TBLPROPERTIES (delta.enableChangeDataFeed = true)
+                """)
+                print(f"   ✅ Change Data Feed habilitado para {table_name}")
+            except Exception as cdf_error:
+                print(f"   ⚠️ Aviso CDF: {cdf_error}")
+                # Não falhar se CDF já estiver habilitado
             
             # Otimizar tabela após escrita (apenas se recreate)
             if recreate:
@@ -439,7 +475,7 @@ class DatabricksVectorStoreManager:
             raise
     
     def _create_or_update_index(self, recreate: bool = False) -> Dict:
-        """Cria ou atualiza índice vetorial no Databricks Vector Search"""
+        """✅ CORRIGIDO: Cria ou atualiza índice vetorial com verificação de CDF"""
         source_table = self.full_index_name.replace("_index", "_table")
         
         try:
@@ -455,6 +491,38 @@ class DatabricksVectorStoreManager:
                 print(f"   📊 Tabela fonte: {source_table} ({table_count} registros)")
                 if table_count == 0:
                     raise ValueError(f"Tabela {source_table} está vazia")
+                
+                # ✅ CORREÇÃO 2: Verificar e habilitar CDF ANTES de criar índice
+                try:
+                    print(f"   🔍 Verificando Change Data Feed...")
+                    table_props = self.spark.sql(f"SHOW TBLPROPERTIES {source_table}").collect()
+                    cdf_enabled = any(
+                        'delta.enableChangeDataFeed' in str(row) and 'true' in str(row).lower()
+                        for row in table_props
+                    )
+                    
+                    if not cdf_enabled:
+                        print(f"   🔧 Habilitando Change Data Feed...")
+                        self.spark.sql(f"""
+                            ALTER TABLE {source_table} 
+                            SET TBLPROPERTIES (delta.enableChangeDataFeed = true)
+                        """)
+                        print(f"   ✅ Change Data Feed habilitado")
+                    else:
+                        print(f"   ✅ Change Data Feed já habilitado")
+                        
+                except Exception as cdf_check_error:
+                    print(f"   ⚠️ Não foi possível verificar CDF: {cdf_check_error}")
+                    print(f"   🔄 Tentando habilitar CDF de qualquer forma...")
+                    try:
+                        self.spark.sql(f"""
+                            ALTER TABLE {source_table} 
+                            SET TBLPROPERTIES (delta.enableChangeDataFeed = true)
+                        """)
+                        print(f"   ✅ CDF habilitado (tentativa de segurança)")
+                    except Exception as cdf_force_error:
+                        print(f"   ⚠️ Erro ao forçar CDF: {cdf_force_error}")
+                
             except Exception as table_error:
                 print(f"   ❌ Erro ao verificar tabela: {table_error}")
                 raise
@@ -473,8 +541,6 @@ class DatabricksVectorStoreManager:
                     if recreate:
                         print(f"   🗑️ Deletando índice existente: {self.full_index_name}")
                         self.client.delete_index(index_name=self.full_index_name)
-                        # Aguardar deleção
-                        import time
                         time.sleep(10)
                         index_exists = False
                     else:
@@ -497,6 +563,7 @@ class DatabricksVectorStoreManager:
                 print(f"      - Embedding column: {self.config.embedding_vector_column}")
                 print(f"      - Dimensões: {self.config.embedding_dim}")
                 
+                # ✅ Criar índice com todas as configurações corretas
                 index = self.client.create_delta_sync_index(
                     endpoint_name=self.config.endpoint_name,
                     index_name=self.full_index_name,
@@ -532,6 +599,7 @@ class DatabricksVectorStoreManager:
             print(f"   🔧 Troubleshooting:")
             print(f"      - Verifique se o endpoint {self.config.endpoint_name} está ativo")
             print(f"      - Verifique se a tabela {source_table} existe e tem dados")
+            print(f"      - Verifique se Change Data Feed está habilitado")
             print(f"      - Verifique permissões do Databricks Vector Search")
             raise
     
@@ -557,14 +625,14 @@ class DatabricksVectorStoreManager:
             Lista de (Document, score) ordenada por relevância
             IMPORTANTE: scores maiores = maior similaridade (0.0-1.0+)
         """
-        # 3️⃣ AJUSTE: Retry com backoff simples
+        # Retry com backoff simples
         max_retries = 3
         for attempt in range(max_retries):
             try:
                 # Gerar embedding da query usando cache otimizado
                 query_embedding = list(self._get_cached_query_embedding(query))
                 
-                # 2️⃣ AJUSTE: Sanitizar filtros com whitelist
+                # Sanitizar filtros com whitelist
                 filter_conditions = []
                 if filters:
                     for key, value in filters.items():
@@ -600,7 +668,7 @@ class DatabricksVectorStoreManager:
                             source_table = row[3] if len(row) > 3 else ""
                             semantic_type = row[4] if len(row) > 4 else ""
                             
-                            # 4️⃣ Score de similaridade (maior = mais similar)
+                            # Score de similaridade (maior = mais similar)
                             score = scores[idx] if idx < len(scores) else 0.8
                             
                             try:
@@ -642,7 +710,7 @@ class DatabricksVectorStoreManager:
                     time.sleep(backoff_time)
                     continue
                 else:
-                    # 3️⃣ Log final de erro após todas as tentativas
+                    # Log final de erro após todas as tentativas
                     print(f"❌ Erro na busca vetorial após {max_retries} tentativas: {str(e)}")
                     print(f"   Query: '{query[:100]}...'")
                     print(f"   Índice: {self.full_index_name}")
@@ -711,12 +779,12 @@ class DatabricksVectorStoreManager:
     
     @lru_cache(maxsize=50)
     def _get_cached_query_embedding(self, query: str) -> tuple:
-        """8️⃣ Cache otimizado para embeddings de query usando @lru_cache"""
+        """Cache otimizado para embeddings de query usando @lru_cache"""
         embedding = self.embeddings.embed_query(query)
         return tuple(embedding)  # tuple para compatibilidade com lru_cache
     
     def _sanitize_filter_value(self, value: str) -> str:
-        """2️⃣ Sanitizar valores de filtro usando whitelist (regex)"""
+        """Sanitizar valores de filtro usando whitelist (regex)"""
         # Whitelist: apenas alfanuméricos, hífens, underscores e espaços
         safe_value = re.sub(r'[^\w\s\-]', '', str(value))
         return safe_value.strip()
@@ -783,7 +851,7 @@ class DatabricksVectorStoreManager:
         try:
             # Tentativa 1: API do index object
             index = self.client.get_index(
-                endpoint_name=f"{self.config.catalog}.{self.config.schema}.vs_endpoint",
+                endpoint_name=self.config.endpoint_name,
                 index_name=self.full_index_name
             )
             
@@ -819,7 +887,7 @@ class DatabricksVectorStoreManager:
 
 
 # =============================================================================
-# RAG RETRIEVER
+# RAG RETRIEVER (SEM ALTERAÇÕES - JÁ ESTAVA CORRETO)
 # =============================================================================
 
 class SRAGRetriever:
@@ -852,7 +920,7 @@ class SRAGRetriever:
         Returns:
             Lista de Documents (nunca None, pode ser vazia)
         """
-        # 7️⃣ NICE-TO-HAVE: Log mínimo de telemetria
+        # Log mínimo de telemetria
         print(f"📊 Retrieval: strategy={strategy}, k={k}, query_len={len(query)}")
         
         # Validação básica
@@ -883,9 +951,7 @@ class SRAGRetriever:
             return []
     
     def _semantic_retrieve(self, query: str, k: int) -> List[Document]:
-        """
-        Busca semântica simples por similaridade
-        """
+        """Busca semântica simples por similaridade"""
         results = self.vsm.search(query, k=k)
         return [doc for doc, score in results]
     
@@ -917,7 +983,7 @@ class SRAGRetriever:
             if "2025" in ano_mes or "2024" in ano_mes:
                 score *= 1.1
             
-            # 5️⃣ MELHORIA: Boost por metadata estruturada (heurística simples)
+            # Boost por metadata estruturada (heurística simples)
             # Boost se UF da query aparece nos metadados
             doc_uf = doc.metadata.get("uf", "").lower()
             if doc_uf and doc_uf in query_lower:
@@ -934,9 +1000,7 @@ class SRAGRetriever:
         return [doc for doc, score in ranked_results[:k]]
     
     def _typed_retrieve(self, query: str, k: int) -> List[Document]:
-        """
-        Busca com detecção simples de tipo geográfico/temporal
-        """
+        """Busca com detecção simples de tipo geográfico/temporal"""
         query_lower = query.lower()
         semantic_type = None
         
@@ -956,4 +1020,3 @@ class SRAGRetriever:
             results = self.vsm.search(query, k=k)
         
         return [doc for doc, score in results]
-
