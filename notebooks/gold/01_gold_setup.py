@@ -1,11 +1,96 @@
 # Databricks notebook source
 # MAGIC %md
-# MAGIC # 🔧 Gold - Setup e Configuração
-# MAGIC 
-# MAGIC **Responsabilidade**: Configurar ambiente, criar schemas e definir constantes
-# MAGIC 
-# MAGIC **Execute sempre primeiro!**
-# MAGIC 
+# MAGIC # Gold Layer — Setup e Configuração
+# MAGIC
+# MAGIC ## 1. Objetivo
+# MAGIC
+# MAGIC Inicializar o ambiente de execução da camada Gold:
+# MAGIC criar o schema de destino, validar a disponibilidade da fonte Silver
+# MAGIC e exportar as constantes de configuração para os notebooks dependentes.
+# MAGIC
+# MAGIC Este notebook deve ser executado antes de qualquer outro notebook da camada Gold.
+# MAGIC
+# MAGIC ---
+# MAGIC
+# MAGIC ## 2. Dependências
+# MAGIC
+# MAGIC | Componente | Identificador |
+# MAGIC |---|---|
+# MAGIC | Catálogo (leitura) | `dbx_srag_lab` |
+# MAGIC | Schema fonte | `dbx_srag_lab.silver` |
+# MAGIC | Tabela fonte | `dbx_srag_lab.silver.silver_srag_clean` |
+# MAGIC | Catálogo (escrita) | `dbx_srag_lab` |
+# MAGIC | Schema destino | `dbx_srag_lab.gold` |
+# MAGIC
+# MAGIC O catálogo `dbx_srag_lab` deve existir previamente.
+# MAGIC A criação de catálogos está fora do escopo deste pipeline.
+# MAGIC
+# MAGIC ---
+# MAGIC
+# MAGIC ## 3. Convenções de Métrica
+# MAGIC
+# MAGIC As definições abaixo são aplicadas de forma consistente em todos os notebooks Gold.
+# MAGIC Qualquer desvio deve ser documentado explicitamente no notebook correspondente.
+# MAGIC
+# MAGIC ### 3.1 Taxa de Mortalidade SRAG (definição estrita)
+# MAGIC
+# MAGIC Inclui apenas casos com desfecho registrado.
+# MAGIC `1` = cura, `2` = óbito por SRAG, `3` = óbito por outras causas (excluído), `9` = ignorado (excluído).
+# MAGIC
+# MAGIC ```
+# MAGIC Denominador : evolucao_clean IN ('1', '2')
+# MAGIC Numerador   : evolucao_clean = '2'
+# MAGIC ```
+# MAGIC
+# MAGIC ### 3.2 Taxa de Utilização de UTI
+# MAGIC
+# MAGIC Calculada apenas sobre a população de pacientes internados com indicador de UTI válido.
+# MAGIC
+# MAGIC ```
+# MAGIC Denominador : is_internado = TRUE
+# MAGIC Numerador   : is_uti_valido = TRUE
+# MAGIC ```
+# MAGIC
+# MAGIC ### 3.3 Cobertura Vacinal
+# MAGIC
+# MAGIC Exclui registros com status vacinal ausente ou desconhecido (código `9` mapeado para NULL na Silver).
+# MAGIC
+# MAGIC ```
+# MAGIC Denominador : vacina_clean IS NOT NULL
+# MAGIC Numerador   : vacina_clean = '1'
+# MAGIC ```
+# MAGIC
+# MAGIC ### 3.4 Estratificação por Idade
+# MAGIC
+# MAGIC Utilizar exclusivamente o campo `idade_anos`, já padronizado na camada Silver.
+# MAGIC `idade_anos` é preenchido apenas quando `TP_IDADE = '3'` (anos).
+# MAGIC Registros com outras unidades recebem `idade_anos = NULL` e `faixa_etaria = 'Desconhecido'`.
+# MAGIC
+# MAGIC ---
+# MAGIC
+# MAGIC ## 4. Catálogo e Schemas
+# MAGIC
+# MAGIC | Camada | Catálogo | Schema |
+# MAGIC |---|---|---|
+# MAGIC | Silver (fonte) | `dbx_srag_lab` | `silver` |
+# MAGIC | Gold (destino) | `dbx_srag_lab` | `gold` |
+# MAGIC
+# MAGIC O schema `dbx_srag_lab.gold` é criado por este notebook caso não exista.
+# MAGIC
+# MAGIC ---
+# MAGIC
+# MAGIC ## 5. Tabelas de Saída
+# MAGIC
+# MAGIC | Identificador lógico | Tabela física |
+# MAGIC |---|---|
+# MAGIC | `metricas_temporais` | `dbx_srag_lab.gold.gold_metricas_temporais` |
+# MAGIC | `metricas_geograficas` | `dbx_srag_lab.gold.gold_metricas_geograficas` |
+# MAGIC | `metricas_demograficas` | `dbx_srag_lab.gold.gold_metricas_demograficas` |
+# MAGIC | `series_temporais` | `dbx_srag_lab.gold.gold_series_temporais` |
+# MAGIC | `serie_diaria_30d` | `dbx_srag_lab.gold.gold_serie_diaria_30d` |
+# MAGIC | `resumo_geral` | `dbx_srag_lab.gold.gold_resumo_geral` |
+# MAGIC | `rag_kpi_fatos` | `dbx_srag_lab.gold.gold_rag_kpi_fatos` |
+# MAGIC | `rag_dicionario_regras` | `dbx_srag_lab.gold.gold_rag_dicionario_regras` |
 
 # COMMAND ----------
 
@@ -13,173 +98,169 @@ from pyspark.sql import functions as F
 from datetime import datetime
 
 print("=" * 80)
-print("🔧 GOLD - SETUP E CONFIGURAÇÃO")
+print("GOLD — SETUP E CONFIGURACAO")
 print("=" * 80)
-print(f"📅 Timestamp: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-print(f"🔧 Spark Version: {spark.version}")
+print(f"Timestamp  : {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+print(f"Spark      : {spark.version}")
 print("=" * 80)
 
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## 📁 Configuração de Catálogos e Schemas
+# MAGIC ## Widgets — Fonte Única de Configuração
+# MAGIC
+# MAGIC Todos os notebooks Gold lêem exclusivamente via `dbutils.widgets.get(...)`.
+# MAGIC `TABLE_SILVER` é derivado de `catalog_silver`, `schema_silver` e `table_silver_name`
+# MAGIC para evitar que paths parcialmente sobrescritos causem destinos inconsistentes.
 
 # COMMAND ----------
 
-# ✅ Unity Catalog - DOIS CATÁLOGOS SEPARADOS
-CATALOG_SILVER = "workspace"          # ✅ Catálogo onde está a Silver (INPUT)
-CATALOG_GOLD = "dbx_lab_draagron"     # ✅ Catálogo onde criar a Gold (OUTPUT)
+_process_id = datetime.now().strftime('%Y%m%d_%H%M%S')
 
-# Schemas
-SCHEMA_SILVER = "silver"
-SCHEMA_GOLD = "gold"
-
-# Tabela fonte (leitura do catálogo Silver)
-TABLE_SILVER = f"{CATALOG_SILVER}.{SCHEMA_SILVER}.silver_srag_clean"
-# Resultado: workspace.silver.silver_srag_clean
-
-# Tabelas Gold (escrita no catálogo Gold)
-TABLES_GOLD = {
-    'metricas_temporais': f"{CATALOG_GOLD}.{SCHEMA_GOLD}.gold_metricas_temporais",
-    'metricas_geograficas': f"{CATALOG_GOLD}.{SCHEMA_GOLD}.gold_metricas_geograficas",
-    'metricas_demograficas': f"{CATALOG_GOLD}.{SCHEMA_GOLD}.gold_metricas_demograficas",
-    'series_temporais': f"{CATALOG_GOLD}.{SCHEMA_GOLD}.gold_series_temporais",
-    'resumo_geral': f"{CATALOG_GOLD}.{SCHEMA_GOLD}.gold_resumo_geral",
-    'analise_avancada': f"{CATALOG_GOLD}.{SCHEMA_GOLD}.gold_analise_avancada"
-}
-# Resultado: dbx_lab_draagron.gold.gold_metricas_temporais, etc.
-
-# Views de consumo (no catálogo Gold)
-VIEWS_GOLD = {
-    'dashboard_principal': f"{CATALOG_GOLD}.{SCHEMA_GOLD}.vw_dashboard_principal",
-    'metricas_6meses': f"{CATALOG_GOLD}.{SCHEMA_GOLD}.vw_metricas_ultimos_6_meses",
-    'top10_ufs': f"{CATALOG_GOLD}.{SCHEMA_GOLD}.vw_top10_ufs",
-    'alertas_mortalidade': f"{CATALOG_GOLD}.{SCHEMA_GOLD}.vw_alertas_mortalidade",
-    'resumo_atual': f"{CATALOG_GOLD}.{SCHEMA_GOLD}.vw_resumo_geral_atual"
-}
-# Resultado: dbx_lab_draagron.gold.vw_dashboard_principal, etc.
-
-# Process ID para rastreamento
-PROCESS_ID = datetime.now().strftime('%Y%m%d_%H%M%S')
-
-print("📂 CONFIGURAÇÃO:")
-print(f"  • Catalog Silver (INPUT): {CATALOG_SILVER}")
-print(f"  • Catalog Gold (OUTPUT): {CATALOG_GOLD}")
-print(f"  • Schema Silver: {SCHEMA_SILVER}")
-print(f"  • Schema Gold: {SCHEMA_GOLD}")
-print(f"  • Fonte: {TABLE_SILVER}")
-print(f"  • Tabelas a criar: {len(TABLES_GOLD)}")
-print(f"  • Views a criar: {len(VIEWS_GOLD)}")
-print(f"  • Process ID: {PROCESS_ID}")
+dbutils.widgets.text("catalog_silver",    "dbx_srag_lab",       "Catalog Silver (leitura)")
+dbutils.widgets.text("schema_silver",     "silver",             "Schema Silver")
+dbutils.widgets.text("table_silver_name", "silver_srag_clean",  "Nome da tabela Silver")
+dbutils.widgets.text("catalog_gold",      "dbx_srag_lab",       "Catalog Gold (escrita)")
+dbutils.widgets.text("schema_gold",       "gold",               "Schema Gold")
+dbutils.widgets.text("process_id",        _process_id,          "Process ID")
 
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## 🏗️ Criar Catálogo Gold
+# MAGIC ## Leitura e Derivação das Configurações
 
 # COMMAND ----------
 
-# ✅ Criar catálogo Gold (dbx_lab_draagron)
-spark.sql(f"""
-    CREATE CATALOG IF NOT EXISTS {CATALOG_GOLD}
-    COMMENT 'Catálogo para camada Gold - Métricas agregadas'
-""")
+CATALOG_SILVER     = dbutils.widgets.get("catalog_silver")
+SCHEMA_SILVER      = dbutils.widgets.get("schema_silver")
+TABLE_SILVER_NAME  = dbutils.widgets.get("table_silver_name")
+CATALOG_GOLD       = dbutils.widgets.get("catalog_gold")
+SCHEMA_GOLD        = dbutils.widgets.get("schema_gold")
+PROCESS_ID         = dbutils.widgets.get("process_id")
 
-print(f"✅ Catálogo criado: {CATALOG_GOLD}")
+# TABLE_SILVER derivado dos três componentes para garantir consistência.
+TABLE_SILVER = f"{CATALOG_SILVER}.{SCHEMA_SILVER}.{TABLE_SILVER_NAME}"
+
+# DATA_SNAPSHOT via Spark para consistência com o fuso do cluster.
+DATA_SNAPSHOT = spark.sql("SELECT current_date() AS d").collect()[0]["d"].isoformat()
+
+# Registrar TABLE_SILVER e DATA_SNAPSHOT como widgets para notebooks filhos.
+dbutils.widgets.text("table_silver",  TABLE_SILVER,  "Tabela Silver (derivada)")
+dbutils.widgets.text("data_snapshot", DATA_SNAPSHOT, "Data Snapshot (YYYY-MM-DD)")
+
+print("Configuracao ativa:")
+print(f"  Fonte    : {TABLE_SILVER}")
+print(f"  Destino  : {CATALOG_GOLD}.{SCHEMA_GOLD}")
+print(f"  Process  : {PROCESS_ID}")
+print(f"  Snapshot : {DATA_SNAPSHOT}")
 
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## 🗃️ Criar Schema Gold
+# MAGIC ## Criação do Schema Gold
 
 # COMMAND ----------
 
-# ✅ Criar schema no catálogo Gold (dbx_lab_draagron)
-spark.sql(f"""
-    CREATE SCHEMA IF NOT EXISTS {CATALOG_GOLD}.{SCHEMA_GOLD}
-    COMMENT 'Camada Gold - Métricas agregadas para BI e RAG'
-""")
-
-print(f"✅ Schema criado: {CATALOG_GOLD}.{SCHEMA_GOLD}")
-
-# COMMAND ----------
-
-# MAGIC %md
-# MAGIC ## 📊 Validar Dados Silver
-
-# COMMAND ----------
-
-# Verificar se Silver existe e tem dados
 try:
-    df_silver = spark.table(TABLE_SILVER)
+    spark.sql(f"""
+        CREATE SCHEMA IF NOT EXISTS {CATALOG_GOLD}.{SCHEMA_GOLD}
+        COMMENT 'Camada Gold — metricas agregadas para BI e RAG'
+    """)
+    print(f"Schema criado/verificado: {CATALOG_GOLD}.{SCHEMA_GOLD}")
+except Exception:
+    spark.sql(f"CREATE SCHEMA IF NOT EXISTS {CATALOG_GOLD}.{SCHEMA_GOLD}")
+    print(f"Schema criado/verificado sem COMMENT: {CATALOG_GOLD}.{SCHEMA_GOLD}")
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ## Validação da Tabela Silver
+
+# COMMAND ----------
+
+# Colunas obrigatórias para o pipeline Gold.
+# sem_pri é opcional — notebooks que dependem dela aplicam fallback próprio.
+COLUNAS_OBRIGATORIAS = ['dt_sin_pri', 'dt_notific', 'sg_uf', 'ano', 'mes']
+COLUNAS_OPCIONAIS    = [
+    'sem_pri',
+    'classi_fin_clean', 'is_covid', 'is_influenza', 'is_outro_virus',
+    'vacina_cov_clean', 'is_vacinado_covid',
+]
+
+try:
+    df_silver    = spark.table(TABLE_SILVER)
     count_silver = df_silver.count()
-    
-    print(f"\n✅ Silver validada:")
-    print(f"  • Tabela: {TABLE_SILVER}")
-    print(f"  • Catálogo: {CATALOG_SILVER}")
-    print(f"  • Registros: {count_silver:,}")
-    print(f"  • Colunas: {len(df_silver.columns)}")
-    
-    # Período de dados
+    colunas_silver = set(df_silver.columns)
+
+    faltantes = [c for c in COLUNAS_OBRIGATORIAS if c not in colunas_silver]
+    opcionais_presentes = [c for c in COLUNAS_OPCIONAIS if c in colunas_silver]
+    opcionais_ausentes  = [c for c in COLUNAS_OPCIONAIS if c not in colunas_silver]
+
     periodo = df_silver.agg(
         F.min('dt_sin_pri').alias('min_data'),
-        F.max('dt_sin_pri').alias('max_data')
+        F.max('dt_sin_pri').alias('max_data'),
     ).collect()[0]
-    
-    print(f"  • Período: {periodo['min_data']} até {periodo['max_data']}")
-    
-    # Validação básica
-    assert count_silver > 0, "❌ Silver está vazia!"
-    
+
+    print(f"Tabela Silver acessada.")
+    print(f"  Tabela    : {TABLE_SILVER}")
+    print(f"  Registros : {count_silver:,}")
+    print(f"  Colunas   : {len(colunas_silver)}")
+    print(f"  Periodo   : {periodo['min_data']} a {periodo['max_data']}")
+
+    if faltantes:
+        print(f"  ATENCAO — colunas obrigatorias ausentes : {faltantes}")
+    else:
+        print(f"  Colunas obrigatorias presentes : OK")
+
+    if opcionais_presentes:
+        print(f"  Colunas opcionais presentes    : {opcionais_presentes}")
+    if opcionais_ausentes:
+        print(f"  Colunas opcionais ausentes     : {opcionais_ausentes} (fallback via weekofyear aplicavel)")
+        _campos_etiol = [c for c in opcionais_ausentes
+                         if c in ('classi_fin_clean','is_covid','is_influenza',
+                                   'is_outro_virus','vacina_cov_clean','is_vacinado_covid')]
+        if _campos_etiol:
+            print(f"  ATENCAO — campos etiologicos ausentes: {_campos_etiol}")
+            print(f"            Execute Silver v2 antes dos notebooks Gold que usam classi_fin.")
+
+    assert count_silver > 0, "A tabela Silver esta vazia."
+    assert not faltantes,    f"Colunas obrigatorias ausentes: {faltantes}"
+
 except Exception as e:
-    print(f"❌ ERRO ao acessar Silver: {str(e)}")
-    print(f"\n💡 Dica: Verifique se:")
-    print(f"   1. O catálogo '{CATALOG_SILVER}' existe")
-    print(f"   2. Você tem permissão de leitura no catálogo '{CATALOG_SILVER}'")
-    print(f"   3. A tabela '{TABLE_SILVER}' existe e tem dados")
+    print(f"ERRO ao acessar a tabela Silver: {str(e)}")
+    print()
+    print("Verifique:")
+    print(f"  1. O catalogo '{CATALOG_SILVER}' existe e esta acessivel.")
+    print(f"  2. O schema '{CATALOG_SILVER}.{SCHEMA_SILVER}' existe.")
+    print(f"  3. A tabela '{TABLE_SILVER}' foi criada pela camada Silver.")
+    print(f"  4. O cluster possui permissao de leitura no catalogo '{CATALOG_SILVER}'.")
     raise
 
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## 🔐 Exportar Configurações para Widgets
+# MAGIC ## Resumo de Execução
 
 # COMMAND ----------
 
-# ✅ Criar widgets para outros notebooks - COM DOIS CATÁLOGOS
-dbutils.widgets.text("catalog_silver", CATALOG_SILVER, "Catalog Silver (INPUT)")
-dbutils.widgets.text("catalog_gold", CATALOG_GOLD, "Catalog Gold (OUTPUT)")
-dbutils.widgets.text("schema_silver", SCHEMA_SILVER, "Schema Silver")
-dbutils.widgets.text("schema_gold", SCHEMA_GOLD, "Schema Gold")
-dbutils.widgets.text("table_silver", TABLE_SILVER, "Tabela Silver")
-dbutils.widgets.text("process_id", PROCESS_ID, "Process ID")
-
-print("✅ Widgets criados para compartilhamento entre notebooks")
-print("\n📋 Widgets disponíveis:")
-print(f"  • catalog_silver = {CATALOG_SILVER}")
-print(f"  • catalog_gold = {CATALOG_GOLD}")
-print(f"  • schema_silver = {SCHEMA_SILVER}")
-print(f"  • schema_gold = {SCHEMA_GOLD}")
-print(f"  • table_silver = {TABLE_SILVER}")
-print(f"  • process_id = {PROCESS_ID}")
-
-# COMMAND ----------
-
-# MAGIC %md
-# MAGIC ## 📋 Resumo
-
-# COMMAND ----------
-
-print("\n" + "=" * 80)
-print("✅ SETUP CONCLUÍDO COM SUCESSO")
 print("=" * 80)
-print(f"\n📊 Configuração:")
-print(f"  • Lendo de: {CATALOG_SILVER}.{SCHEMA_SILVER}")
-print(f"  • Escrevendo em: {CATALOG_GOLD}.{SCHEMA_GOLD}")
-print(f"\n📊 Próximos passos:")
-print(f"  1. Execute: gold_metricas_temporais")
-print(f"  2. Execute: gold_metricas_geograficas")
-print(f"  3. Execute: gold_metricas_demograficas")
-print(f"  4. Execute: gold_series_resumo")
-print(f"\n💡 Dica: Notebooks 1-4 podem rodar em paralelo!")
+print("SETUP GOLD — RESUMO")
 print("=" * 80)
+print(f"  Fonte    : {TABLE_SILVER}")
+print(f"  Destino  : {CATALOG_GOLD}.{SCHEMA_GOLD}")
+print(f"  Process  : {PROCESS_ID}")
+print(f"  Snapshot : {DATA_SNAPSHOT}")
+print()
+print("Ordem de execucao dos notebooks dependentes:")
+print("  1. gold_metricas_temporais    (inclui gold_serie_diaria_30d)")
+print("  2. gold_metricas_geograficas  (pode rodar em paralelo com 1)")
+print("  3. gold_metricas_demograficas (pode rodar em paralelo com 1 e 2)")
+print("  4. gold_base_conhecimento_rag    — executar APOS 1, 2 e 3")
+print()
+print("  Notebooks 1, 2 e 3: execucao paralela permitida.")
+print("  Notebook 4 (RAG): DEVE ser executado por ultimo.")
+print("=" * 80)
+
+# COMMAND ----------
+
+

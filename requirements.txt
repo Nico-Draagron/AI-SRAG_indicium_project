@@ -1,37 +1,40 @@
-# ============================================
-# LANGCHAIN ECOSSYSTEM (1.x COMPATÍVEL)
-# ============================================
-langchain>=1.1.0,<2.0.0
-langchain-core>=1.2.6,<2.0.0
-langchain-community>=0.3.0
-langchain-openai>=1.1.7
-langgraph>=0.2.45
+# Dependências — Ambiente Databricks
+#
+# Pins obrigatórios:
+#   anyio    <4.0  — jupyter-server 1.23.4 exige <4
+#   protobuf <5.0  — googleapis-common-protos 1.62.0 exige <5
 
-# ============================================
-# OPENAI
-# ============================================
-openai>=1.109.1,<3.0.0
+anyio>=3.1.0,<4.0.0
+protobuf>=3.19.5,<5.0.0
 
-# ============================================
-# WEB SEARCH
-# ============================================
+# LangChain
+langchain>=0.3.0,<0.4.0
+langchain-core>=0.3.0,<0.4.0
+langchain-community>=0.3.0,<0.4.0
+langchain-openai>=0.2.0,<0.3.0
+langgraph>=0.2.45,<0.3.0
+databricks-langchain>=0.3.0
+langchain-huggingface>=0.1.0
+
+# OpenAI
+openai>=1.50.0,<2.0.0
+
+# Web Search
 tavily-python==0.5.0
 
-# ============================================
-# DATA
-# ============================================
-pandas>=2.0.0
-numpy>=1.26.0
+# Data
+pandas>=2.0.0,<3.0.0
+numpy>=1.26.0,<2.0.0
 
-# ============================================
-# RETRY
-# ============================================
-tenacity>=8.0.0
+# Visualization
+# kaleido fixado em 0.1.0 — versões >=0.2.0 usam Chromium e exigem display
+# server (X11/Wayland), que não existe em cluster nodes do Databricks.
+# Não atualizar sem configurar Xvfb no init script do cluster.
+kaleido==0.1.0
 
-# ============================================
-# RAG / VECTOR
-# ============================================
+# Retry
+tenacity>=8.0.0,<9.0.0
+
+# RAG / Vector
 databricks-vectorsearch>=0.30
-sentence-transformers>=3.3.1
-transformers>=4.34.0
-tiktoken>=0.8.0
+tiktoken>=0.7.0,<1.0.0

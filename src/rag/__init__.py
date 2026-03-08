@@ -1,39 +1,57 @@
-# =============================================================================
-# src/rag/__init__.py
-# =============================================================================
-
 """
-RAG System - Retrieval Augmented Generation
-============================================
+RAG System — Retrieval Augmented Generation para SRAG
+======================================================
 
-Sistema completo de RAG para SRAG:
-- Document Loader: Converte tabelas Gold em documentos
-- Vector Store: Databricks Vector Search + embeddings
-- RAG Chain: Retrieval + generation com LLM
+API pública do módulo src/rag/.
+
+Componentes
+-----------
+document_loader
+    GoldDocumentLoader: carrega tabelas Gold e converte em SRAGDocuments.
+    SRAGDocument: documento semântico intermediário (Gold → Vector Store).
+
+vector_store
+    EmbeddingManager: factory de embeddings (Databricks BGE Large / HuggingFace).
+    VectorStoreConfig: configuração do índice e tabela Delta.
+    DatabricksVectorStoreManager: gerencia ciclo completo do Vector Search.
+    SRAGRetriever: retrieval com estratégias semantic, hybrid e typed.
+
+rag_chain
+    RAGConfig: parâmetros de retrieval e contexto.
+    ContextBuilder: monta contexto textual para o LLM.
+    ResponseValidator: valida qualidade da resposta gerada.
+    SRAGChain: pipeline RAG completo (retrieval → LLM → validação).
+    ConversationalSRAGChain: SRAGChain com memória de histórico em memória.
 """
 
 from src.rag.document_loader import GoldDocumentLoader, SRAGDocument
 from src.rag.vector_store import (
-    EmbeddingManager,
     DatabricksVectorStoreManager,
+    EmbeddingManager,
     SRAGRetriever,
-    VectorStoreConfig
+    VectorStoreConfig,
 )
-from src.rag.rag_chain import SRAGChain, RAGConfig, ContextBuilder
+from src.rag.rag_chain import (
+    ContextBuilder,
+    ConversationalSRAGChain,
+    RAGConfig,
+    ResponseValidator,
+    SRAGChain,
+)
 
 __all__ = [
-    # Document Loader
+    # document_loader
     "GoldDocumentLoader",
     "SRAGDocument",
-    
-    # Vector Store
-    "EmbeddingManager",
+    # vector_store
     "DatabricksVectorStoreManager",
+    "EmbeddingManager",
     "SRAGRetriever",
     "VectorStoreConfig",
-    
-    # RAG Chain
-    "SRAGChain",
+    # rag_chain
+    "ContextBuilder",
+    "ConversationalSRAGChain",
     "RAGConfig",
-    "ContextBuilder"
+    "ResponseValidator",
+    "SRAGChain",
 ]

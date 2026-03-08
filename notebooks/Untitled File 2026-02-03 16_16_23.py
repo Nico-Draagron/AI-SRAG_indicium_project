@@ -24,13 +24,11 @@
 # MAGIC
 # MAGIC | Campo original | Campo `_clean` | Valores válidos | Mapeado para NULL |
 # MAGIC |---|---|---|---|
-# MAGIC | `EVOLUCAO`    | `evolucao_clean`   | `'1'`, `'2'` | `'3'`, `'9'`, vazio, NULL |
-# MAGIC | `HOSPITAL`    | `hospital_clean`   | `'1'`, `'2'` | `'9'`, vazio, NULL |
-# MAGIC | `UTI`         | `uti_clean`        | `'1'`, `'2'` | `'9'`, vazio, NULL |
-# MAGIC | `VACINA`      | `vacina_clean`     | `'1'`, `'2'` | `'9'`, vazio, NULL |
-# MAGIC | `VACINA_COV`  | `vacina_cov_clean` | `'1'`, `'2'` | `'9'`, vazio, NULL |
-# MAGIC | `CLASSI_FIN`  | `classi_fin_clean` | `'1'`–`'5'`  | `'9'`, vazio, NULL |
-# MAGIC | `CS_SEXO`     | `cs_sexo_clean`    | `'1'`, `'2'` | primeiro normaliza `'M'`→`'1'` e `'F'`→`'2'`; depois `'9'`, vazio, NULL e outros→NULL |
+# MAGIC | `EVOLUCAO` | `evolucao_clean` | `'1'`, `'2'` | `'3'`, `'9'`, vazio, NULL |
+# MAGIC | `HOSPITAL`  | `hospital_clean` | `'1'`, `'2'` | `'9'`, vazio, NULL |
+# MAGIC | `UTI`       | `uti_clean`      | `'1'`, `'2'` | `'9'`, vazio, NULL |
+# MAGIC | `VACINA`    | `vacina_clean`   | `'1'`, `'2'` | `'9'`, vazio, NULL |
+# MAGIC | `CS_SEXO`   | `cs_sexo_clean`  | `'1'`, `'2'` | `'9'`, `'M'`→`'1'`, `'F'`→`'2'`, outros→NULL |
 # MAGIC
 # MAGIC > **Nota**: código `'9'` = "Ignorado" no padrão DATASUS — semanticamente distinto
 # MAGIC > de NULL ("não informado"). Ambos são excluídos dos denominadores das métricas.
@@ -92,9 +90,9 @@
 # MAGIC
 # MAGIC ## Compatibilidade de Runtime
 # MAGIC
-# MAGIC - Datas parseadas por detecção de formato via regex (`yyyy-MM-dd` ou
-# MAGIC   `dd/MM/yyyy`), retornando NULL para formatos desconhecidos — nunca lança
-# MAGIC   exceção. **`try_to_date` não é usado** por ausência em runtimes não-ML do Databricks.
+# MAGIC - Datas parseadas com `F.coalesce(F.to_date(...), F.to_date(...))` — nunca
+# MAGIC   lança exceção, retorna NULL para formatos não reconhecidos.
+# MAGIC   **`try_to_date` não é usado** por ausência em runtimes não-ML do Databricks.
 # MAGIC - Sem SciPy, Seaborn ou outras dependências opcionais.
 
 # COMMAND ----------
@@ -144,29 +142,27 @@ print(f"Process ID : {PROCESS_ID}")
 # COMMAND ----------
 
 def _parse_date(col_name: str):
-    c = F.trim(F.col(col_name).cast("string"))
+    """
+    Parse tolerante de data via coalesce — dois formatos, sem try_to_date.
+    to_date retorna NULL para formato não reconhecido (nunca lança exceção).
+    Compatível com todos os runtimes Databricks.
+    """
+    return F.coalesce(
+        F.to_date(F.col(col_name), 'dd/MM/yyyy'),
+        F.to_date(F.col(col_name), 'yyyy-MM-dd'),
+    )
 
-    # Se vier no padrão ISO yyyy-MM-dd, parseia com esse padrão
-    iso = F.when(c.rlike(r"^\d{4}-\d{2}-\d{2}$"), F.to_date(c, "yyyy-MM-dd"))
-
-    # Se vier no padrão BR dd/MM/yyyy, parseia com esse padrão
-    br  = F.when(c.rlike(r"^\d{2}/\d{2}/\d{4}$"), F.to_date(c, "dd/MM/yyyy"))
-
-    # Se for vazio/null/outro, retorna NULL (tolerante)
-    return F.coalesce(iso, br)
 
 def _clean_code9(col_name: str, valid_values: list):
     """
     Sanitiza campo categórico:
-      1. trim + cast string (remove espaços e normaliza tipo)
-      2. retorna o valor se estiver em valid_values
-      3. retorna NULL para '9', string vazia, NULL ou qualquer outro valor
+      - retorna o valor original se estiver em valid_values
+      - retorna NULL para '9', string vazia ou qualquer outro valor
     Usado para produzir colunas *_clean usadas em métricas.
     """
-    trimmed = F.trim(F.col(col_name).cast('string'))
     return F.when(
-        trimmed.isin(valid_values),
-        trimmed
+        F.col(col_name).isin(valid_values),
+        F.col(col_name)
     ).otherwise(None)
 
 # COMMAND ----------
@@ -176,19 +172,7 @@ def _clean_code9(col_name: str, valid_values: list):
 
 # COMMAND ----------
 
-df_bronze = spark.table(TABLE_BRONZE)
-
-# Normaliza nomes de coluna para MAIÚSCULAS logo após a leitura.
-# Bronzes do SIVEP-Gripe chegam ora em maiúscula, ora em minúscula dependendo
-# do ano de origem ou da pipeline de ingestão. Todas as seções downstream
-# (seleção, parsing de datas, campos _clean) esperam MAIÚSCULAS — normalizar
-# aqui é o ponto único de correção, sem impacto em nenhuma outra lógica.
-mixed_case_cols = [c for c in df_bronze.columns if c != c.upper()]
-if mixed_case_cols:
-    print(f"Normalizando {len(mixed_case_cols)} coluna(s) para MAIÚSCULAS: {mixed_case_cols}")
-    for col_name in mixed_case_cols:
-        df_bronze = df_bronze.withColumnRenamed(col_name, col_name.upper())
-
+df_bronze   = spark.table(TABLE_BRONZE)
 bronze_count = df_bronze.count()
 bronze_cols  = len(df_bronze.columns)
 
@@ -205,8 +189,6 @@ df_bronze.groupBy("ANO_DADOS").count().orderBy("ANO_DADOS").show()
 
 COLUNAS_SILVER = [
     # identificação
-    '_ingested_at',          # metadado Bronze — usado no desempate do F4
-    '_ingestion_run_id',     # rastreabilidade de run
     'NU_NOTIFIC',
     # temporal
     'DT_NOTIFIC', 'DT_SIN_PRI', 'SEM_PRI', 'ANO_DADOS',
@@ -237,8 +219,8 @@ df_sel = df_bronze.select(*cols_exist)
 # MAGIC %md
 # MAGIC ## 6. Tipagem e parsing de datas
 # MAGIC
-# MAGIC Datas parseadas por detecção de formato via regex (`yyyy-MM-dd` ou `dd/MM/yyyy`),
-# MAGIC retornando NULL para formatos desconhecidos. `try_to_date` **não é utilizado** — indisponível em runtimes não-ML.
+# MAGIC Datas parseadas com `F.coalesce(F.to_date(...), F.to_date(...))`.
+# MAGIC `try_to_date` **não é utilizado** — indisponível em runtimes não-ML.
 # MAGIC
 # MAGIC `idade_anos`: somente quando `TP_IDADE = '3'` (anos completos).
 # MAGIC Veja seção "Regra de Idade" no cabeçalho.
@@ -247,32 +229,13 @@ df_sel = df_bronze.select(*cols_exist)
 
 CAMPOS_DATA = ['DT_NOTIFIC', 'DT_SIN_PRI', 'DT_INTERNA', 'DT_ENTUTI', 'DT_EVOLUCA']
 
-# Anti-stale: recria df_sel a partir de df_bronze + cols_exist da Seção 5.
-# Executado ANTES do pre-flight para garantir que validamos o df_sel
-# recém-criado — nunca um df_sel residual de execução anterior.
-df_sel = df_bronze.select(*cols_exist)
-
-# Pre-flight: valida o df_sel recém-criado (não o que estava em memória).
-# Quebra aqui, com mensagem clara, se a Bronze não tem as colunas esperadas.
-required_raw = ["DT_SIN_PRI", "DT_NOTIFIC"]
-missing_raw = [c for c in required_raw if c not in df_sel.columns]
-assert not missing_raw, \
-    f"Seção 6: df_sel não tem colunas temporais: {missing_raw}. df_sel cols: {df_sel.columns}"
-
 df_typed = df_sel
 for campo in CAMPOS_DATA:
     if campo in df_typed.columns:
-        # Usa nome temporário para evitar colisão case-insensitive:
-        # com spark.sql.caseSensitive=false, withColumn("dt_sin_pri") sobre um df
-        # que já tem "DT_SIN_PRI" sobrescreve a coluna original em vez de criar uma
-        # nova — o .drop("DT_SIN_PRI") subsequente então remove a coluna parseada.
-        # O nome __<campo> é garantidamente distinto em qualquer modo de case.
-        tmp = f"__{campo.lower()}"
-        df_typed = (df_typed
-            .withColumn(tmp, _parse_date(campo))
-            .drop(campo)
-            .withColumnRenamed(tmp, campo.lower())
-        )
+        df_typed = df_typed.withColumn(campo.lower(), _parse_date(campo)) \
+                           .drop(campo)
+
+# idade_anos: apenas TP_IDADE='3' (anos completos)
 if 'NU_IDADE_N' in df_typed.columns:
     df_typed = df_typed \
         .withColumn('idade_anos',
@@ -298,18 +261,6 @@ for c in cols_upper:
 
 print(f"Colunas após tipagem: {len(df_typed.columns)}")
 
-# Diagnóstico pós-parsing: imprime estado real antes de qualquer assert.
-# Útil para inspecionar o log mesmo quando a execução prossegue normalmente.
-print("Após parsing datas | has dt_sin_pri:", "dt_sin_pri" in df_typed.columns,
-      "| has dt_notific:", "dt_notific" in df_typed.columns)
-
-# Asserts pós-parsing: falha imediatamente se o loop não produziu as colunas.
-# Mensagem inclui lista completa de colunas para diagnóstico sem rerun.
-assert "dt_sin_pri" in df_typed.columns, \
-    f"Parsing não criou dt_sin_pri. Colunas: {df_typed.columns}"
-assert "dt_notific" in df_typed.columns, \
-    f"Parsing não criou dt_notific. Colunas: {df_typed.columns}"
-
 # COMMAND ----------
 
 # MAGIC %md
@@ -328,53 +279,27 @@ if 'cs_sexo' in df_typed.columns:
     )
 
 CAMPOS_CLEAN = {
-    'evolucao'  : ['1', '2'],   # '3' (óbito outras causas) excluído — ver Regras de Mortalidade
-    'hospital'  : ['1', '2'],
-    'uti'       : ['1', '2'],
-    'vacina'    : ['1', '2'],
-    'cs_sexo'   : ['1', '2'],
-    'vacina_cov': ['1', '2'],          # vacinação COVID-19; '9' → NULL
-    'classi_fin': ['1', '2', '3', '4', '5'],  # classificação etiológica SRAG
+    'evolucao' : ['1', '2'],   # '3' (óbito outras causas) excluído — ver Regras de Mortalidade
+    'hospital' : ['1', '2'],
+    'uti'      : ['1', '2'],
+    'vacina'   : ['1', '2'],
+    'cs_sexo'  : ['1', '2'],
 }
 
 for campo, validos in CAMPOS_CLEAN.items():
     if campo in df_typed.columns:
         df_typed = df_typed.withColumn(f'{campo}_clean', _clean_code9(campo, validos))
-    else:
-        # Schema estável: garante que a coluna existe mesmo quando ausente na Bronze
-        df_typed = df_typed.withColumn(f'{campo}_clean', F.lit(None).cast('string'))
 
 print("Campos _clean criados:")
 for campo in CAMPOS_CLEAN:
-    status = "Bronze" if campo in df_typed.columns else "NULL (ausente na Bronze)"
-    print(f"  {campo}_clean  ← válidos {CAMPOS_CLEAN[campo]} | resto → NULL  [{status}]")
+    print(f"  {campo}_clean  ← válidos {CAMPOS_CLEAN[campo]} | resto → NULL")
 
 # COMMAND ----------
 
 # MAGIC %md
 # MAGIC ## 8. Filtros de qualidade
-# MAGIC
-# MAGIC > ⚠️ **Atenção operacional**: sempre execute com *Run All* (ou *Run all above*
-# MAGIC > desde a Seção 4) para evitar estado inconsistente entre células. Executar
-# MAGIC > células isoladas pode deixar `df_typed` de uma sessão anterior sem as colunas
-# MAGIC > de data produzidas pela Seção 6, causando `UNRESOLVED_COLUMN` na Seção 9.
 
 # COMMAND ----------
-
-# Tabela temporária para materialização Delta do F4 (substitui cache no Serverless).
-# Usa PROCESS_ID para garantir isolamento entre execuções paralelas/reprocessamentos.
-TMP_TABLE_F4 = f"{CATALOG}.{SCHEMA_SILVER}._tmp_silver_f4_{PROCESS_ID}"
-
-# Pre-flight cleanup: remove resíduo de uma execução anterior que tenha falhado.
-# Em notebooks Databricks, try/finally não abrange múltiplas células — o padrão
-# equivalente e idiomático é: DROP aqui (cobre falha anterior) + DROP no final
-# (cobre sucesso). Juntos garantem que o catálogo nunca acumule tabelas _tmp_.
-spark.sql(f"DROP TABLE IF EXISTS {TMP_TABLE_F4}")
-
-# Guard-rail: confirma que df_typed chegou aqui com as colunas de data íntegras.
-# Protege contra execução de células fora de ordem ou estado residual de sessão.
-assert "dt_sin_pri" in df_typed.columns and "dt_notific" in df_typed.columns, \
-    f"Seção 8: df_typed chegou sem colunas de data. Colunas: {df_typed.columns}"
 
 n0 = df_typed.count()
 print(f"Registros antes dos filtros : {n0:,}")
@@ -389,13 +314,6 @@ n1 = df_f.count()
 print(f"F1 (campos obrigatórios)    : -{n0-n1:,}  → {n1:,}")
 
 # F2: consistência temporal
-# Garante que dt_interna e dt_evoluca existem no schema antes do filtro.
-# Safras antigas do SIVEP-Gripe podem não ter essas colunas — sem essa
-# proteção o F2 quebraria com AnalysisException em vez de filtrar normalmente.
-for _c in ["dt_interna", "dt_evoluca"]:
-    if _c not in df_f.columns:
-        df_f = df_f.withColumn(_c, F.lit(None).cast("date"))
-
 df_f = df_f.filter(
     (F.col('dt_sin_pri') <= F.col('dt_notific')) &
     (F.col('dt_interna').isNull() | (F.col('dt_sin_pri') <= F.col('dt_interna'))) &
@@ -412,61 +330,14 @@ df_f = df_f.filter(
 n3 = df_f.count()
 print(f"F3 (idade 0–120)            : -{n2-n3:,}  → {n3:,}")
 
-from pyspark.sql import Window
-
-# F4: deduplicação determinística por NU_NOTIFIC
-# Garante _ingested_at para desempate — será NULL se Bronze não tiver (guard)
-if '_ingested_at' not in df_f.columns:
-    df_f = df_f.withColumn('_ingested_at', F.lit(None).cast('timestamp'))
-
-# Deduplicação determinística: mantém o registro com notificação mais recente
-# Alinhado com o comportamento de repescagem do DATASUS (versão mais atual prevalece)
-_window_dedup = Window.partitionBy('nu_notific').orderBy(
-    F.desc('dt_notific'),
-    F.desc('_ingested_at')
-)
-df_f = (
-    df_f
-    .withColumn('_row_dedup', F.row_number().over(_window_dedup))
-    .filter(F.col('_row_dedup') == 1)
-    .drop('_row_dedup')
-)
-
-# Materialização explícita em Delta (substitui .cache(), não suportado em Serverless).
-# Vantagens: compatível com Serverless + Unity Catalog, evita recomputar o DAG
-# inteiro a cada action subsequente (.count(), feature engineering, validações).
-# overwriteSchema omitido: schema é sempre idêntico nesta etapa, opção desnecessária.
-
-# Diagnóstico pré-write: confirma schema antes de materializar.
-# Se dt_sin_pri não aparecer aqui, o problema está em F1/F2/F3 — não no write.
-print("ANTES do write TMP | dt_sin_pri presente:", "dt_sin_pri" in df_f.columns)
-print("ANTES do write TMP | colunas (amostra)   :", df_f.columns[:40])
-
-# DROP explícito imediatamente antes do write: garante que nunca haverá conflito
-# com schema de uma TMP anterior que o pre-flight cleanup possa ter perdido
-# (ex.: execução parcial da mesma célula em rerun rápido).
-spark.sql(f"DROP TABLE IF EXISTS {TMP_TABLE_F4}")
-(
-    df_f.write
-        .mode("overwrite")
-        .saveAsTable(TMP_TABLE_F4)
-)
-
-# Releitura — df_f agora aponta para o Delta materializado
-df_f = spark.table(TMP_TABLE_F4)
-
-# Guard-rail: se as colunas de data sumiram na TMP, falha aqui com mensagem clara
-# em vez de quebrar com UNRESOLVED_COLUMN na Seção 9 (erro confuso e distante).
-assert "dt_sin_pri" in df_f.columns and "dt_notific" in df_f.columns, \
-    f"TMP_TABLE_F4 sem datas. Colunas: {df_f.columns}"
-
+# F4: deduplicação por NU_NOTIFIC
+df_f = df_f.dropDuplicates(['nu_notific'])
 n4 = df_f.count()
 print(f"F4 (deduplicação notific.)  : -{n3-n4:,}  → {n4:,}")
 
 pct_excluido = (n0 - n4) / n0 * 100
 print(f"\nExclusão total : {n0-n4:,} ({pct_excluido:.2f}%)")
-# threshold único: 60% — alinhado com a validação pós-escrita (seção 12)
-assert pct_excluido < 60, f"Exclusão excessiva: {pct_excluido:.1f}% > 60%"
+assert pct_excluido < 40, f"Exclusão excessiva: {pct_excluido:.1f}% > 40%"
 
 # COMMAND ----------
 
@@ -483,7 +354,7 @@ df_eng = df_eng \
     .withColumn('mes',  F.month('dt_sin_pri')) \
     .withColumn('ano_mes_date', F.trunc('dt_sin_pri', 'month')) \
     .withColumn('ano_mes',
-        F.concat(F.year('dt_sin_pri').cast('string'), F.lit('-'),
+        F.concat(F.year('dt_sin_pri'), F.lit('-'),
                  F.lpad(F.month('dt_sin_pri'), 2, '0'))
     ) \
     .withColumn('tempo_sintoma_notificacao',
@@ -544,27 +415,14 @@ df_eng = df_eng \
 df_eng = df_eng.withColumn('is_vacinado',
     F.when(F.col('vacina_clean') == '1', True).otherwise(False))
 
-# --- 9.6 Vacinação COVID-19 e Classificação Etiológica ---
-df_eng = df_eng.withColumn('is_vacinado_covid',
-    F.when(F.col('vacina_cov_clean') == '1', True).otherwise(False))
-
-df_eng = (df_eng
-    .withColumn('is_covid',
-        F.when(F.col('classi_fin_clean') == '5', True).otherwise(False))
-    .withColumn('is_influenza',
-        F.when(F.col('classi_fin_clean') == '1', True).otherwise(False))
-    .withColumn('is_outro_virus',
-        F.when(F.col('classi_fin_clean') == '2', True).otherwise(False))
-)
-
-# --- 9.7 Sintomas ---
+# --- 9.6 Sintomas ---
 for sint, col_out in [('febre','has_febre'), ('tosse','has_tosse'),
                       ('dispneia','has_dispneia')]:
     if sint in df_eng.columns:
         df_eng = df_eng.withColumn(col_out,
             F.when(F.col(sint) == '1', True).otherwise(False))
 
-# --- 9.8 Qualidade ---
+# --- 9.7 Qualidade ---
 df_eng = df_eng \
     .withColumn('_data_valida',
         F.col('dt_sin_pri').isNotNull() & F.col('dt_notific').isNotNull() &
@@ -572,12 +430,11 @@ df_eng = df_eng \
     ) \
     .withColumn('_completude_score',
         (
-            F.when(F.col('cs_sexo_clean').isNotNull(),    1).otherwise(0) +
-            F.when(F.col('idade_anos').isNotNull(),       1).otherwise(0) +
-            F.when(F.col('evolucao_clean').isNotNull(),   1).otherwise(0) +
-            F.when(F.col('sg_uf').isNotNull(),            1).otherwise(0) +
-            F.when(F.col('classi_fin_clean').isNotNull(), 1).otherwise(0)
-        ) / F.lit(5.0)
+            F.when(F.col('cs_sexo_clean').isNotNull(),  1).otherwise(0) +
+            F.when(F.col('idade_anos').isNotNull(),     1).otherwise(0) +
+            F.when(F.col('evolucao_clean').isNotNull(), 1).otherwise(0) +
+            F.when(F.col('sg_uf').isNotNull(),          1).otherwise(0)
+        ) / F.lit(4.0)
     )
 
 # COMMAND ----------
@@ -670,17 +527,6 @@ for col in ['hospital_clean', 'uti_clean']:
 # V7: distribuição de evolucao e evolucao_clean (evidencia tratamento do '3' e '9')
 print("\nDistribuição EVOLUCAO (original) vs evolucao_clean:")
 df_chk.groupBy('evolucao', 'evolucao_clean').count().orderBy('evolucao').show()
-
-# V8: distribuição classi_fin_clean por ano
-print("\nDistribuição CLASSI_FIN_CLEAN por ano:")
-df_chk.groupBy('ano', 'classi_fin_clean').count() \
-    .orderBy('ano', 'classi_fin_clean').show(20)
-
-# V9: flags etiológicas
-covid_n = df_chk.filter(F.col('is_covid')).count()
-flu_n   = df_chk.filter(F.col('is_influenza')).count()
-print(f"V9 is_covid     : {covid_n:,} ({covid_n/silver_count*100:.1f}%)")
-print(f"V9 is_influenza : {flu_n:,} ({flu_n/silver_count*100:.1f}%)")
 
 # COMMAND ----------
 
@@ -804,27 +650,11 @@ print(f"  Partições  : ano + mes")
 print(f"  Z-order    : dt_sin_pri, sg_uf")
 print()
 print("  Flags epidemiológicas:")
-print("    is_obito_srag    : evolucao_clean = '2' (SRAG estrita)")
-print("    is_cura          : evolucao_clean = '1'")
-print("    is_internado     : hospital_clean = '1'")
-print("    is_uti_valido    : hospital_clean = '1' AND uti_clean = '1'")
-print("    is_vacinado      : vacina_clean = '1'")
-print("    is_vacinado_covid: vacina_cov_clean = '1'")
-print("    is_covid         : classi_fin_clean = '5'")
-print("    is_influenza     : classi_fin_clean = '1'")
-print("    is_outro_virus   : classi_fin_clean = '2'")
+print("    is_obito_srag  : evolucao_clean = '2' (SRAG estrita)")
+print("    is_cura        : evolucao_clean = '1'")
+print("    is_internado   : hospital_clean = '1'")
+print("    is_uti_valido  : hospital_clean = '1' AND uti_clean = '1'")
+print("    is_vacinado    : vacina_clean = '1'")
 print()
 print("  Próximo: Gold Layer")
 print("=" * 70)
-
-# COMMAND ----------
-
-# MAGIC %md
-# MAGIC ## 15. Limpeza de tabelas temporárias
-
-# COMMAND ----------
-
-# Remove a tabela Delta temporária criada no F4 (materialização Serverless-safe).
-# Executado ao final para não ocupar espaço no catálogo após a Silver estar gravada.
-spark.sql(f"DROP TABLE IF EXISTS {TMP_TABLE_F4}")
-print(f"Tabela temporária removida: {TMP_TABLE_F4}")

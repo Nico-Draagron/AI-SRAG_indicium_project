@@ -77,6 +77,7 @@ import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 import warnings
+import os
 
 warnings.filterwarnings('ignore')
 plt.style.use('seaborn-v0_8-darkgrid')
@@ -124,6 +125,30 @@ RUN_ID = f"{datetime.now():%Y%m%d_%H%M%S_%f}_{uuid4().hex[:8]}"
 
 print(f"Fonte  : {TABLE_BRONZE}")
 print(f"Run ID : {RUN_ID}")
+
+# ── Configuração de diretório de imagens ─────────────────────────────────────
+# Caminho relativo: notebooks/EDA/ → ../../images/graficos/
+try:
+    _nb_raw  = (dbutils.notebook.entry_point
+                .getDbutils().notebook().getContext()
+                .notebookPath().get())               # /Users/.../notebooks/EDA/03_eda_...
+    _nb_dir  = "/Workspace/" + "/".join(_nb_raw.lstrip("/").split("/")[:-1])
+    IMAGES_DIR = os.path.normpath(os.path.join(_nb_dir, "../../images/graficos"))
+except Exception:
+    IMAGES_DIR = "/tmp/eda_graficos"                 # fallback para execução local
+
+os.makedirs(IMAGES_DIR, exist_ok=True)
+print(f"[images] Diretório configurado: {IMAGES_DIR}")
+
+
+def _save_fig(fig, filename: str) -> None:
+    """Exibe no notebook Databricks E salva em IMAGES_DIR. Fecha a figura."""
+    display(fig)
+    dest = os.path.join(IMAGES_DIR, filename)
+    fig.savefig(dest, dpi=150, bbox_inches="tight")
+    print(f"  [img] → {dest}")
+    plt.close(fig)
+
 
 # COMMAND ----------
 
@@ -278,7 +303,7 @@ if len(pd_diaria) > 0:
     ax.set_title('Casos SRAG — Série Diária (últimos 90 dias)', fontsize=14, fontweight='bold')
     ax.set_xlabel('Data de Primeiros Sintomas'); ax.set_ylabel('Número de Casos')
     ax.tick_params(axis='x', rotation=45); ax.grid(True, alpha=0.3)
-    plt.tight_layout(); display(fig); plt.close()
+    plt.tight_layout(); _save_fig(fig, "eda_01_serie_diaria_90d.png")
 
     print(f"Período   : {pd_diaria['dt_sintomas'].min()} a {pd_diaria['dt_sintomas'].max()}")
     print(f"Total     : {pd_diaria['casos'].sum():,} casos")
@@ -332,7 +357,7 @@ if len(pd_mensal) > 0:
     ax.set_title('Casos SRAG por Mês — Últimos 12 Meses', fontsize=14, fontweight='bold')
     ax.set_xlabel('Mês'); ax.set_ylabel('Número de Casos')
     ax.tick_params(axis='x', rotation=45); ax.grid(True, alpha=0.3, axis='y')
-    plt.tight_layout(); display(fig); plt.close()
+    plt.tight_layout(); _save_fig(fig, "eda_02_casos_mensal_12m.png")
 
     # Gráfico 2 — crescimento mensal
     cresc_plot   = pd_mensal['crescimento_pct'].fillna(0)
@@ -343,7 +368,7 @@ if len(pd_mensal) > 0:
     ax.set_title('Taxa de Crescimento Mensal (%) — Últimos 12 Meses', fontsize=14, fontweight='bold')
     ax.set_xlabel('Mês'); ax.set_ylabel('Variação (%)')
     ax.tick_params(axis='x', rotation=45); ax.grid(True, alpha=0.3, axis='y')
-    plt.tight_layout(); display(fig); plt.close()
+    plt.tight_layout(); _save_fig(fig, "eda_03_crescimento_mensal_12m.png")
 
     cresc_valido = pd_mensal['crescimento_pct'].dropna()
     print(f"Média/mês  : {pd_mensal['casos'].mean():,.0f} | Mediana: {pd_mensal['casos'].median():,.0f}")
@@ -385,7 +410,7 @@ if len(pd_semanal) > 0:
     ax.set_title('Sazonalidade — Casos por Semana Epidemiológica', fontsize=14, fontweight='bold')
     ax.set_xlabel('Semana Epidemiológica'); ax.set_ylabel('Número de Casos')
     ax.legend(title='Ano'); ax.grid(True, alpha=0.3)
-    plt.tight_layout(); display(fig); plt.close()
+    plt.tight_layout(); _save_fig(fig, "eda_04_sazonalidade_semana.png")
 
     semanas_pico = pd_semanal.groupby('SEM_PRI')['casos'].mean().nlargest(5)
     print("Semanas de pico (média): " + ", ".join([f"SE{int(s)}" for s in semanas_pico.index]))
@@ -412,7 +437,7 @@ if len(pd_anual) > 0:
                 f'{int(h):,}', ha='center', va='bottom', fontsize=11, fontweight='bold')
     ax.set_title('Casos SRAG por Ano', fontsize=14, fontweight='bold')
     ax.set_xlabel('Ano'); ax.set_ylabel('Número de Casos'); ax.grid(True, alpha=0.3, axis='y')
-    plt.tight_layout(); display(fig); plt.close()
+    plt.tight_layout(); _save_fig(fig, "eda_05_casos_por_ano.png")
 
     pd_anual['variacao_pct'] = pd_anual['casos'].pct_change() * 100
     for _, row in pd_anual.iterrows():
@@ -449,7 +474,7 @@ if len(pd_uf) > 0:
     ax.set_xlabel('Casos'); ax.grid(True, alpha=0.3, axis='x')
     for i, v in enumerate(pd_uf['casos']):
         ax.text(v, i, f'  {v:,}', va='center', fontsize=9)
-    plt.tight_layout(); display(fig); plt.close()
+    plt.tight_layout(); _save_fig(fig, "eda_06_top_ufs.png")
 
     for _, row in pd_uf.head(5).iterrows():
         print(f"  {row['SG_UF']}: {row['casos']:,} ({row['percentual']:.1f}%)")
@@ -484,7 +509,7 @@ if len(pd_sexo) > 0:
         h = bar.get_height()
         ax.text(bar.get_x() + bar.get_width() / 2, h,
                 f'{int(h):,}\n({pct:.1f}%)', ha='center', va='bottom', fontsize=11)
-    plt.tight_layout(); display(fig); plt.close()
+    plt.tight_layout(); _save_fig(fig, "eda_07_distribuicao_sexo.png")
 
     for _, row in pd_sexo.iterrows():
         print(f"  {row['sexo_label']}: {row['casos']:,} ({row['percentual']:.1f}%)")
@@ -520,7 +545,7 @@ if len(pd_idade) > 0:
         h = bar.get_height()
         ax.text(bar.get_x() + bar.get_width() / 2, h,
                 f'{int(h):,}\n({pct:.1f}%)', ha='center', va='bottom', fontsize=9)
-    plt.tight_layout(); display(fig); plt.close()
+    plt.tight_layout(); _save_fig(fig, "eda_08_faixa_etaria.png")
 
     for _, row in pd_idade.iterrows():
         print(f"  {row['faixa_etaria']}: {row['casos']:,} ({row['percentual']:.1f}%)")
@@ -559,7 +584,7 @@ if _classi_col:
     ax.set_title('Classificação Etiológica SRAG por Ano', fontsize=14, fontweight='bold')
     ax.set_xlabel('Ano'); ax.set_ylabel('Casos'); ax.tick_params(axis='x', rotation=0)
     ax.legend(title='CLASSI_FIN', bbox_to_anchor=(1.05,1))
-    plt.tight_layout(); display(fig); plt.close()
+    plt.tight_layout(); _save_fig(fig, "eda_09_classificacao_etiologica.png")
 
     # 8.2 Taxa de NULL/9 por ano
     pct_sem_classi = (
@@ -620,7 +645,7 @@ if len(pd_mort_hist) > 0:
     axes[1].set_ylabel('Taxa de Mortalidade (%)'); axes[1].set_ylim(0, mort_h['taxa_mort'].max() * 1.3)
     axes[1].grid(True, alpha=0.3)
     plt.suptitle('Análise de Mortalidade SRAG — 2023 a 2025', fontsize=14, fontweight='bold', y=1.02)
-    plt.tight_layout(); display(fig); plt.close()
+    plt.tight_layout(); _save_fig(fig, "eda_10_desfechos_e_mortalidade.png")
 
     for ano in mort_h.index:
         print(f"  {int(ano)}: Taxa {mort_h.loc[ano,'taxa_mort']:.2f}% | "
@@ -663,7 +688,7 @@ if len(pd_uti_hist) > 0:
     axes[1].set_ylabel('Taxa UTI (%)'); axes[1].set_ylim(0, uti_h['taxa_uti'].max() * 1.3)
     axes[1].grid(True, alpha=0.3)
     plt.suptitle('Ocupação UTI SRAG — 2023 a 2025', fontsize=14, fontweight='bold', y=1.02)
-    plt.tight_layout(); display(fig); plt.close()
+    plt.tight_layout(); _save_fig(fig, "eda_11_uti_internacao.png")
 
     for ano in uti_h.index:
         print(f"  {int(ano)}: Taxa UTI {uti_h.loc[ano,'taxa_uti']:.2f}% | "
@@ -704,7 +729,7 @@ if len(pd_vac_hist) > 0:
     axes[1].set_ylabel('Taxa de Vacinação (%)'); axes[1].set_ylim(0, min(100, vac_h['taxa_vac'].max() * 1.3))
     axes[1].grid(True, alpha=0.3)
     plt.suptitle('Cobertura Vacinal SRAG — 2023 a 2025', fontsize=14, fontweight='bold', y=1.02)
-    plt.tight_layout(); display(fig); plt.close()
+    plt.tight_layout(); _save_fig(fig, "eda_12_vacinacao.png")
 
     for ano in vac_h.index:
         print(f"  {int(ano)}: Taxa vacinação {vac_h.loc[ano,'taxa_vac']:.2f}% | "
@@ -747,7 +772,7 @@ if len(pd_idade_ano) > 0:
     ax.set_xticks(x); ax.set_xticklabels(pivot_fx.index, rotation=30, ha='right')
     ax.set_title('Distribuição Etária por Ano (%) — 2023 a 2025', fontsize=13, fontweight='bold')
     ax.set_ylabel('% de Casos'); ax.legend(title='Ano'); ax.grid(True, alpha=0.3, axis='y')
-    plt.tight_layout(); display(fig); plt.close()
+    plt.tight_layout(); _save_fig(fig, "eda_13_distribuicao_etaria_ano.png")
 
     print("% grupo 60+ anos por ano:")
     for ano in anos_fx:
@@ -802,7 +827,7 @@ if len(pd_mensal_hist) > 0:
     axes[1].set_title('Heatmap Casos — Mês × Ano', fontsize=12, fontweight='bold')
 
     plt.suptitle('Sazonalidade Histórica SRAG — 2023 a 2025', fontsize=14, fontweight='bold', y=1.02)
-    plt.tight_layout(); display(fig); plt.close()
+    plt.tight_layout(); _save_fig(fig, "eda_14_sazonalidade_historica.png")
 
 # COMMAND ----------
 
@@ -843,7 +868,7 @@ if len(pd_mort_fx) > 0:
     ax.set_title('Taxa de Mortalidade por Faixa Etária e Ano', fontsize=13, fontweight='bold')
     ax.set_xlabel('Faixa Etária'); ax.set_ylabel('Taxa de Mortalidade (%)')
     ax.tick_params(axis='x', rotation=30); ax.legend(title='Ano'); ax.grid(True, alpha=0.3)
-    plt.tight_layout(); display(fig); plt.close()
+    plt.tight_layout(); _save_fig(fig, "eda_15_mortalidade_faixa_etaria.png")
 
     print("Taxa de mortalidade nos grupos mais vulneráveis:")
     for ano in anos_mfx:
@@ -899,7 +924,7 @@ if len(pd_mort_ano) > 0:
         h = bar.get_height()
         ax.text(bar.get_x() + bar.get_width()/2, h,
                 f'{int(h):,}', ha='center', va='bottom', fontsize=11)
-    plt.tight_layout(); display(fig); plt.close()
+    plt.tight_layout(); _save_fig(fig, "eda_16_desfechos_total.png")
 
     print(f"Mortalidade SRAG: {taxa_geral:.2f}%  ({obitos_geral:,} óbitos / {total_geral:,})")
     for ano in mort_pivot.index:
@@ -939,7 +964,7 @@ if len(pd_uti) > 0:
         h = bar.get_height()
         ax.text(bar.get_x() + bar.get_width()/2, h,
                 f'{int(h):,}', ha='center', va='bottom', fontsize=11)
-    plt.tight_layout(); display(fig); plt.close()
+    plt.tight_layout(); _save_fig(fig, "eda_17_uti_vs_enfermaria.png")
 
     print(f"Taxa UTI: {taxa_uti:.2f}%  (UTI {uti_sim:,} / Total {total_h:,})")
 
@@ -978,7 +1003,7 @@ if len(pd_vac) > 0:
         h = bar.get_height()
         ax.text(bar.get_x() + bar.get_width()/2, h,
                 f'{int(h):,}\n({pct:.1f}%)', ha='center', va='bottom', fontsize=11)
-    plt.tight_layout(); display(fig); plt.close()
+    plt.tight_layout(); _save_fig(fig, "eda_18_status_vacinacao.png")
 
     print(f"Vacinação: {taxa_vac:.2f}%  (Vacinados {vacinados:,} / Total {total_v:,})")
 
@@ -1042,7 +1067,7 @@ for i in range(n_v):
                 color='black' if mat[i,j] < 0.6 else 'white')
 ax.set_title("Cramér's V — Associações Categóricas\n(código '9' e NULL excluídos)",
              fontsize=13, fontweight='bold')
-plt.tight_layout(); display(fig); plt.close()
+plt.tight_layout(); _save_fig(fig, "eda_19_cramers_v.png")
 
 fortes = sorted(
     [{'v1': vars_ok[i], 'v2': vars_ok[j], 'v': mat[i,j]}
@@ -1086,7 +1111,7 @@ ax.set_xlabel('% Ausente')
 ax.axvline(x=20, color='orange', linestyle='--', linewidth=1, label='20%')
 ax.axvline(x=40, color='red',    linestyle='--', linewidth=1, label='40%')
 ax.legend(); ax.grid(True, alpha=0.3, axis='x')
-plt.tight_layout(); display(fig); plt.close()
+plt.tight_layout(); _save_fig(fig, "eda_20_missingness.png")
 
 print("Top 10 ausências:")
 for _, row in pd_miss.head(10).iterrows():
@@ -1115,7 +1140,7 @@ ax.set_xlabel('% Código "9"')
 ax.axvline(x=15, color='orange', linestyle='--', linewidth=1, label='15%')
 ax.axvline(x=30, color='red',    linestyle='--', linewidth=1, label='30%')
 ax.legend(); ax.grid(True, alpha=0.3, axis='x')
-plt.tight_layout(); display(fig); plt.close()
+plt.tight_layout(); _save_fig(fig, "eda_21_code9.png")
 
 # Código '9' = 'Ignorado' no DATASUS — não equivale a NULL e deve ser tratado separadamente.
 print("Campos com código '9' > 10%:")

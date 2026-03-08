@@ -1,0 +1,1 @@
+SHOW TABLES IN dbx_srag_lab.gold;
