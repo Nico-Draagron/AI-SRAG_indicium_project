@@ -29,7 +29,7 @@
 | 1 | [Sobre o Projeto](#1-sobre-o-projeto) |
 | 2 | [Arquitetura da Solução](#2-arquitetura-da-solução) |
 | 3 | [Estrutura do Repositório](#3-estrutura-do-repositório) |
-| 4 | [Pré-requisitos](#4-pré-requisitos) |
+| 4 | [Pré-requisitos](#4-pré-requisitos) — tipo de cluster, secrets CLI, alternativa Databricks LLM |
 | 5 | [Como Executar](#5-como-executar) |
 | 6 | [Resultados Obtidos](#6-resultados-obtidos) |
 | 7 | [Análise Epidemiológica Detalhada](#7-análise-epidemiológica-detalhada) |
@@ -173,22 +173,100 @@ O **LangGraph StateGraph** é o núcleo do agente: cada estratégia de execuçã
 
 ## 4. Pré-requisitos
 
+### 4.1 Tipo de Cluster — Ponto Crítico
+
+> ⚠️ **Este é o requisito mais importante para o funcionamento pleno do agente.**
+
+O cluster Databricks **deve ser do tipo híbrido (ex.: Azure Databricks)** — não utilize clusters totalmente gerenciados pela Databricks (Serverless gerenciado). Clusters gerenciados bloqueiam conexões de saída para APIs externas, o que faz o agente cair em modo de fallback para ambas as integrações principais:
+
+| Integração | Cluster gerenciado (Serverless) | Cluster híbrido (Azure) |
+|---|---|---|
+| OpenAI (GPT-4o-mini) | ❌ Bloqueado → fallback para Llama | ✅ Funcional |
+| Tavily API (Web Search) | ❌ Bloqueado → sem notícias | ✅ Funcional |
+| Databricks Vector Search | ✅ Funcional | ✅ Funcional |
+| Tabelas Gold / Delta | ✅ Funcional | ✅ Funcional |
+
+O agente foi desenvolvido e certificado em **Azure Databricks com cluster híbrido**. Com qualquer outro tipo de cluster que restrinja egress de rede, as ferramentas de busca web e o LLM primário não estarão disponíveis — o agente continuará operando, mas com capacidades reduzidas.
+
+---
+
+### 4.2 Infraestrutura
+
 | Recurso | Especificação |
 |---|---|
-| Plataforma | Databricks Serverless (Python 3.10) |
+| Plataforma | Azure Databricks — cluster híbrido (não Serverless gerenciado) |
 | Unity Catalog | `dbx_srag_lab` com schemas `data_original`, `silver`, `gold`, `audit` |
 | Volume | `dbx_srag_lab.default.srag_outputs` |
 | Databricks Vector Search | Endpoint `srag_vector_endpoint` ativo |
 
-**Secrets (Databricks Secret Store):**
+---
+
+### 4.3 Configuração de Secrets via CLI
+
+O agente lê todas as credenciais do **Databricks Secret Store** — nenhuma chave é exposta em código ou variável de ambiente. Para configurar, execute os comandos abaixo via **Databricks CLI** (uma única vez):
+
+**Passo 1 — Criar o scope `ai-engineer`:**
+
+```bash
+databricks secrets create-scope --scope ai-engineer
+```
+
+**Passo 2 — Adicionar as chaves de API:**
+
+```bash
+# Chave da OpenAI (LLM primário — GPT-4o-mini)
+databricks secrets put --scope ai-engineer --key openai-api-key
+
+# Chave da Tavily (Web Search — notícias em tempo real)
+databricks secrets put --scope ai-engineer --key tavily-api-key
+```
+
+> Após executar `put`, o CLI abrirá um editor para você colar o valor da chave com segurança. O valor nunca fica visível em logs ou histórico de terminal.
+
+**Verificação:**
+
+```bash
+# Lista as chaves cadastradas no scope (mostra apenas os nomes, nunca os valores)
+databricks secrets list --scope ai-engineer
+```
+
+Saída esperada:
 
 ```
-scope: ai-engineer
-├── openai-api-key   ← GPT-4o-mini (LLM primário)
-└── tavily-api-key   ← Web Search — notícias em tempo real
+Key name         Last updated
+---------------  -------------------------
+openai-api-key   2026-XX-XX XX:XX:XX UTC
+tavily-api-key   2026-XX-XX XX:XX:XX UTC
 ```
 
-> ⚠️ Sem `openai-api-key`, o agente faz fallback automático para `meta-llama-3-3-70b` (Databricks Foundation Models, sem custo de token adicional).
+Como as credenciais são lidas no notebook:
+
+```python
+OPENAI_API_KEY = dbutils.secrets.get(scope="ai-engineer", key="openai-api-key")
+TAVILY_API_KEY = dbutils.secrets.get(scope="ai-engineer", key="tavily-api-key")
+```
+
+---
+
+### 4.4 Alternativa sem OpenAI — Modelo Nativo Databricks
+
+Caso não queira utilizar a OpenAI (sem custo de token adicional), o agente suporta troca para o modelo nativo do Databricks Foundation Models. Basta alterar uma linha na célula de configuração do notebook:
+
+```python
+# Configuração padrão — OpenAI (LLM primário, requer openai-api-key no scope)
+LLM_PROVIDER = "openai"
+
+# Alternativa — modelo nativo Databricks (sem custo de token adicional)
+LLM_PROVIDER = "databricks"
+```
+
+Quando `LLM_PROVIDER = "databricks"`, o agente utiliza automaticamente:
+
+```
+databricks-meta-llama-3-3-70b-instruct
+```
+
+> **Quando usar cada opção:** o GPT-4o-mini (`openai`) produz narrativas mais fluidas e sínteses mais precisas em português. O Llama 70B (`databricks`) é uma alternativa robusta sem custo adicional — recomendado quando o cluster não tem acesso à API da OpenAI ou para reduzir dependências externas.
 
 ---
 
