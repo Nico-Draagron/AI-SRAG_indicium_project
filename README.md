@@ -287,7 +287,7 @@ CREATE SCHEMA IF NOT EXISTS dbx_srag_lab.data_original;
 **Passo 2 — Criar o Volume para os dados brutos:**
 
 ```sql
-CREATE VOLUME IF NOT EXISTS dbx_srag_lab.data_original.dados_brutos;
+CREATE VOLUME IF NOT EXISTS dbx_srag_lab.data_original.data_srag;
 ```
 
 **Passo 3 — Fazer upload dos CSVs para o Volume:**
