@@ -7,128 +7,28 @@ tabelas Gold do Unity Catalog, exportando cada gráfico como HTML leve e
 como PNG estático via Kaleido.
 
 Dois modos de uso:
-    generate_all_charts()    : conjunto fixo de 5 gráficos padrão, de uso
-                               explícito e opt-in — deve ser chamado somente
-                               quando a intenção do usuário inclui visualização.
-    generate_custom_chart()  : gráfico único ad-hoc, invocado pelo nó
-                               execute_chart com dados já pré-processados
-                               via SQL parametrizada.
+    generate_all_charts()    : conjunto fixo de 5 gráficos padrão, opt-in.
+    generate_custom_chart()  : gráfico único ad-hoc com inteligência visual,
+                               invocado pelo nó execute_chart com dados
+                               pré-processados via SQL parametrizada.
 
-Os métodos públicos create_*_chart() existem para permitir geração pontual
-fora do pipeline principal — testes unitários e notebooks exploratórios.
+Os métodos públicos create_*_chart() existem para geração pontual fora do
+pipeline principal — testes unitários e notebooks exploratórios.
 
-Decisões de design
-------------------
-Export PNG via plotly.io.write_image() gerado diretamente
-    O notebook 07 tentava converter o HTML salvo pelo Plotly em PNG usando
-    kaleido. O kaleido não consegue parsear HTML — ele espera um objeto Figure
-    serializado, não a saída de write_html(). A conversão sempre falhava em
-    tempo de validação. A solução é gerar o PNG diretamente via
-    pio.write_image() logo após a escrita do HTML, na mesma chamada de
-    _write_and_record(). O PNG e o HTML ficam no mesmo diretório de saída
-    com o mesmo chart_id como base de nome. O export PNG é não-bloqueante:
-    se kaleido não estiver instalado ou write_image() falhar por qualquer
-    razão, um aviso é registrado no AuditLogger e a execução continua — o
-    HTML é sempre o artefato primário.
-
-Guard de kaleido em __init__ com self._kaleido_available
-    A versão anterior verificava kaleido dentro de _write_chart_png, chamado
-    uma vez por gráfico. Com kaleido não instalado, cada um dos 5 gráficos
-    gerava uma exceção → 5 chart_write_error no AuditLogger por execução,
-    sem nenhum diagnóstico útil além de "verifique se kaleido está instalado".
-    A nova versão executa _check_kaleido_available() uma vez no __init__,
-    cacheia em self._kaleido_available e loga o status no evento TOOL_INITIALIZED.
-    _write_chart_png verifica o flag antes de qualquer tentativa — retorna None
-    imediatamente quando False, sem gerar exceções repetidas. Para ativar PNG
-    em runtime sem recriar o objeto, use chart_tool.try_enable_png().
-
-generate_all_charts() como método opt-in
-    A versão anterior era descrita como "invocado pelo nó execute_sql do
-    orquestrador", o que levava o nó a chamá-lo após toda execução de SQL,
-    independentemente da intenção da query. Perguntas simples como "total de
-    casos por ano" disparavam cinco queries Spark adicionais e escrita de
-    cinco arquivos sem necessidade. generate_all_charts() é um método de uso
-    explícito: o orquestrador deve chamá-lo somente quando a classificação de
-    intenção indicar que o usuário solicitou visualização. Esta docstring e
-    o bloco "Dois modos de uso" acima foram corrigidos para refletir esse
-    contrato.
-
-CTE para cálculo de janela temporal em _generate_monthly_chart
-    Window functions (MAX(...) OVER()) são proibidas na cláusula WHERE em
-    Spark SQL e lançam AnalysisException em toda execução. A query anterior
-    usava essa construção, fazendo o gráfico mensal nunca ser gerado — o erro
-    era capturado silenciosamente pelo except genérico. A solução adota CTE
-    que isola o cálculo do valor de corte em uma subquery separada, retornando
-    um escalar que pode ser usado no WHERE sem restrição.
-
-include_plotlyjs="cdn" em vez de bundle embutido
-    fig.write_html() sem parâmetros serializa a biblioteca Plotly completa
-    (~3.7 MB) dentro de cada arquivo HTML. Com 120 arquivos acumulados, o
-    diretório cresce para ~400 MB sem nenhum ganho de funcionalidade — a
-    biblioteca não muda entre execuções. O parâmetro include_plotlyjs="cdn"
-    reduz cada arquivo para ~8 KB, carregando Plotly via CDN no momento da
-    visualização. A troca é que o HTML não funciona offline; dado que os
-    relatórios SRAG são consultados em ambientes com acesso à internet, esse
-    custo é aceitável.
-
-output_dirs dict no construtor em vez de output_dir único
-    O design anterior usava um único self.output_dir para todos os tipos de
-    gráfico. _write_and_record() não roteava por tipo, então charts/daily/ e
-    charts/monthly/ ficavam vazios enquanto tudo ia para charts/custom/. O
-    construtor agora aceita output_dirs: Dict[str, Path] mapeando tipo para
-    diretório. Quando o tipo não está no dict, usa a chave "default". O valor
-    padrão preserva o comportamento anterior para quem não passa output_dirs.
-
-_apply_standard_layout centraliza configuração visual
-    Cada _generate_* definia altura, margens e ticks de forma ad-hoc e
-    inconsistente. Isso produzia gráficos com estilos divergentes no mesmo
-    relatório. O método _apply_standard_layout() aplica as configurações de
-    forma uniforme por tipo de gráfico, permitindo ajuste global em um único
-    lugar. O gráfico mensal recebe tratamento especial de eixo X (tickmode
-    linear, dtick=1) porque Plotly omite labels automaticamente quando detecta
-    risco de sobreposição — em séries de 12 meses, apenas 4-6 labels ficam
-    visíveis com o comportamento padrão, o que em contexto epidemiológico pode
-    ser interpretado como dado faltante.
-
-Thread-safety em _generate_chart_id via threading.Lock
-    self._charts_created era lido e incrementado em operações não atômicas
-    separadas. Em execuções paralelas, dois gráficos podiam receber o mesmo
-    contador antes de qualquer incremento, gerando IDs idênticos e
-    sobrescrevendo arquivos sem aviso. O Lock protege a leitura e o incremento
-    como operação atômica sem overhead significativo dado o volume esperado.
-
-cleanup_old_charts com limite configurável
-    Sem rotação, arquivos HTML acumulam indefinidamente. cleanup_old_charts()
-    lista o diretório de saída, ordena por data de modificação e remove os
-    arquivos mais antigos quando o total excede max_files. A operação é
-    explícita e não ocorre automaticamente para não introduzir latência
-    inesperada durante geração.
-
-file_size registrado no AuditLogger
-    ChartMetadata continha file_size mas generate_all_charts() descartava o
-    dict completo, retornando apenas o path. O file_size é o único ponto do
-    pipeline onde um alerta de acúmulo de disco poderia ser disparado. Ele
-    agora é registrado no AuditLogger dentro de _write_and_record() para que
-    o dado não seja silenciosamente descartado mesmo quando o chamador não
-    consome os metadados completos.
-
-Contrato implícito do pie chart documentado
-    generate_custom_chart() mapeava x_col -> labels_col e y_col -> values_col
-    ao despachar para create_pie_chart(). Esse mapeamento não estava
-    documentado, forçando o chamador a adivinhar a convenção. A docstring
-    agora declara explicitamente o contrato para chart_type="pie".
-
-ChartGenerator como alias com DeprecationWarning
-    O alias silencioso não avisava consumidores sobre a migração para ChartTool,
-    tornando breaking changes invisíveis. O padrão adotado em GoldSQLToolLegacy
-    é replicado aqui: subclasse com warnings.warn() no __init__.
-
-Separação entre falha de escrita e falha de stat em _write_and_record
-    A versão anterior capturava genericamente qualquer exceção após write_html().
-    Quando stat() falhava com FileNotFoundError (path de Volume inacessível),
-    o erro era absorvido sem identificar a causa real. Agora _write_chart_html
-    e stat() têm blocos try/except independentes com contexto de diagnóstico
-    distinto no AuditLogger.
+Melhorias desta versão
+----------------------
+- Camada de humanização de nomes técnicos (LABEL_MAP).
+- Detecção automática de métricas percentuais com formatação de eixo/hover.
+- Troca automática para barra horizontal quando há muitas categorias ou
+  labels longos.
+- generate_custom_chart() valida colunas, infere natureza do dado, corrige
+  escolhas inadequadas de gráfico e aplica defaults inteligentes.
+- Novos métodos especializados: create_grouped_bar_chart, create_top_n_chart,
+  create_year_comparison_chart, create_rate_comparison_chart.
+- Hover templates ricos e padronizados por tipo de dado.
+- Ordenação automática de categorias e datas.
+- Bloqueio de pie chart para alta cardinalidade (> MAX_PIE_CATEGORIES).
+- Layout limpo, analítico e responsivo com subtítulo de fonte/período.
 """
 
 import importlib.util
@@ -141,36 +41,98 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
 from pathlib import Path
-from typing import Dict, List, Optional, Union
+from typing import Dict, List, Optional, Tuple, Union
 import time
 
 import pandas as pd
 import plotly.graph_objects as go
 import plotly.io as pio
+from plotly.subplots import make_subplots
 
+
+# =============================================================================
+# HUMANIZAÇÃO DE LABELS
+# =============================================================================
+
+LABEL_MAP: Dict[str, str] = {
+    # Temporais
+    "ano":              "Ano",
+    "ano_mes":          "Período",
+    "mes":              "Mês",
+    "data_referencia":  "Data",
+    "dt_sintomas":      "Data de Sintomas",
+    # Geográficos
+    "sg_uf":            "UF",
+    "uf":               "UF",
+    "regiao":           "Região",
+    "municipio":        "Município",
+    # Demográficos
+    "faixa_etaria":         "Faixa etária",
+    "faixa_etaria_label":   "Faixa etária",
+    "sexo_label":           "Sexo",
+    "sexo":                 "Sexo",
+    # Contagens
+    "total_casos":      "Total de casos",
+    "casos_dia":        "Casos no dia",
+    "total_obitos":     "Total de óbitos",
+    "obitos":           "Óbitos",
+    # Taxas / percentuais
+    "taxa_mortalidade": "Taxa de mortalidade (%)",
+    "taxa_uti":         "Taxa de ocupação de UTI (%)",
+    "taxa_vacinacao":   "Taxa de vacinação (%)",
+    "taxa_hospitalizacao": "Taxa de hospitalização (%)",
+    "taxa_obito":       "Taxa de óbito (%)",
+    # Virais
+    "COVID_19":             "COVID-19",
+    "Influenza":            "Influenza",
+    "Outro_Virus":          "Outro vírus",
+    "Sem_Classificacao":    "Sem classificação",
+}
+
+# Sufixos que identificam coluna percentual quando o nome não está no LABEL_MAP
+_PCT_SUFFIXES = ("taxa_", "perc_", "_pct", "_rate", "proporcao_")
+
+# Cardinalidade máxima aceita para pie chart
+MAX_PIE_CATEGORIES = 8
+
+# Threshold para troca automática para barra horizontal
+_H_BAR_THRESHOLD_CATEGORIES = 8
+_H_BAR_THRESHOLD_LABEL_LEN  = 6   # comprimento médio de label
+
+
+def humanize(col: str) -> str:
+    """Retorna rótulo legível para o nome técnico de coluna."""
+    return LABEL_MAP.get(col, col.replace("_", " ").title())
+
+
+def _is_percent_col(col: str) -> bool:
+    """Heurística: True se a coluna provavelmente representa uma taxa/percentual."""
+    if col in LABEL_MAP and "%" in LABEL_MAP[col]:
+        return True
+    c = col.lower()
+    return any(c.startswith(s) or c.endswith(s.strip("_")) for s in _PCT_SUFFIXES)
+
+
+def _is_temporal_col(col: str) -> bool:
+    """Heurística: True se a coluna representa uma dimensão temporal."""
+    c = col.lower()
+    return any(k in c for k in ("data", "dt_", "ano_mes", "ano", "mes", "semana", "periodo"))
+
+
+# =============================================================================
+# VERIFICAÇÃO DE KALEIDO
+# =============================================================================
 
 def _check_kaleido_available() -> bool:
-    """
-    Verifica se kaleido está instalado e operacional para export PNG.
-
-    Usa importlib.util.find_spec() para evitar import completo — mais rápido
-    e não polui o namespace. Confirma operacionalidade renderizando uma figura
-    mínima via BytesIO, detectando instalações corrompidas antes do primeiro
-    gráfico real.
-
-    Chamada uma vez no __init__ do ChartTool e resultado cacheado em
-    self._kaleido_available para evitar overhead por gráfico gerado.
-    """
     if importlib.util.find_spec("kaleido") is None:
         return False
     try:
         import io as _io
-        # Teste mínimo: figura vazia 1×1 — falha rápida se o renderizador
-        # interno do kaleido não inicializar corretamente.
         pio.write_image(go.Figure(), _io.BytesIO(), format="png", width=1, height=1)
         return True
     except Exception:
         return False
+
 
 try:
     from src.utils.audit import AuditLogger, AuditEvent, EventStatus
@@ -197,7 +159,7 @@ except ImportError:
 
 
 # =============================================================================
-# TIPOS E CONFIGURACAO
+# TIPOS E CONFIGURAÇÃO
 # =============================================================================
 
 class ChartType(Enum):
@@ -223,19 +185,9 @@ _DEFAULT_OUTPUT_BASE = "/Volumes/dbx_srag_lab/default/srag_outputs/charts"
 
 @dataclass
 class ChartConfig:
-    """
-    Parâmetros visuais globais aplicados a todos os gráficos.
-
-    A paleta segue a ordem padrão do Matplotlib para manter consistência
-    visual quando os mesmos dados são comparados entre gráficos distintos.
-
-    default_output_dirs
-        Diretório de fallback quando output_dirs não é fornecido ao construtor.
-        Não deve ser alterado em subclasses — passe output_dirs no construtor.
-    """
     default_theme:        ChartTheme = ChartTheme.LIGHT
-    default_height:       int        = 500
-    default_width:        int        = 900
+    default_height:       int        = 520
+    default_width:        int        = 960
     enable_interactivity: bool       = True
     color_palette: List[str] = field(default_factory=lambda: [
         "#1f77b4", "#ff7f0e", "#2ca02c", "#d62728",
@@ -245,17 +197,6 @@ class ChartConfig:
 
 @dataclass
 class ChartMetadata:
-    """
-    Metadados registrados por gráfico gerado.
-
-    export_path
-        Caminho absoluto do arquivo HTML gerado. Sempre preenchido quando
-        _write_and_record() conclui sem exceção.
-    export_path_png
-        Caminho absoluto do arquivo PNG gerado via pio.write_image(). None
-        quando kaleido não está instalado ou write_image() falha — a ausência
-        do PNG não invalida o registro; o HTML permanece como artefato primário.
-    """
     chart_id:                str
     chart_type:              ChartType
     title:                   str
@@ -273,43 +214,27 @@ class ChartMetadata:
 
 class ChartTool:
     """
-    Gerador de gráficos Plotly para o pipeline SRAG.
+    Gerador de gráficos Plotly para o pipeline SRAG com inteligência visual.
 
     Parâmetros
     ----------
-    spark
-        SparkSession. Obrigatória para os métodos _generate_*, que executam
-        Spark SQL diretamente. Não é necessária para create_*_chart() e
-        generate_custom_chart(), que recebem dados já materializados.
-    audit_logger
-        Instância de AuditLogger. Quando None, usa o stub local que imprime
-        no stdout — suficiente para testes.
-    config
-        ChartConfig com parâmetros visuais globais. Quando None, usa defaults.
-    output_dirs
-        Dict mapeando tipo de gráfico para diretório de destino. Chaves
-        reconhecidas: "line", "mensal", "bar", "area", "multi_line",
-        "heatmap", "pie", "default". Quando o tipo não está no dict, usa
-        "default". Quando None, todos os gráficos vão para o diretório
-        padrão em _DEFAULT_OUTPUT_BASE/custom.
-    catalog / schema
-        Identificadores Unity Catalog usados nas queries internas dos métodos
-        _generate_*. Sem hardcode para permitir execução em schemas de teste.
-    dbutils
-        Objeto dbutils do Databricks. Quando fornecido, a escrita de arquivos
-        usa dbutils.fs.put() em vez de open() nativo, garantindo persistência
-        em Unity Catalog Volumes em Databricks Runtime < 13.x.
+    spark       : SparkSession — necessária para os métodos _generate_*.
+    audit_logger: AuditLogger — stub local quando None.
+    config      : ChartConfig com parâmetros visuais globais.
+    output_dirs : Dict mapeando tipo de gráfico para diretório de destino.
+    catalog / schema : identificadores Unity Catalog.
+    dbutils     : objeto dbutils do Databricks para escrita em Volumes.
     """
 
     def __init__(
         self,
-        spark                             = None,
-        audit_logger: Optional[AuditLogger]    = None,
-        config:       Optional[ChartConfig]    = None,
+        spark                                 = None,
+        audit_logger: Optional[AuditLogger]   = None,
+        config:       Optional[ChartConfig]   = None,
         output_dirs:  Optional[Dict[str, Path]] = None,
         catalog:      str = "dbx_srag_lab",
         schema:       str = "gold",
-        dbutils                           = None,
+        dbutils                               = None,
     ):
         self.spark   = spark
         self.audit   = audit_logger if audit_logger else AuditLogger()
@@ -318,24 +243,20 @@ class ChartTool:
         self.schema  = schema
         self.dbutils = dbutils
 
-        self._output_dirs = self._init_output_dirs(output_dirs)
-        self._id_lock     = threading.Lock()
-        self._charts_created        = 0
-        self._total_generation_time = 0.0
-
-        # Kaleido verificado uma vez — resultado cacheado para evitar
-        # tentativas repetidas (e exceções repetidas no audit) por gráfico.
-        # Quando False, _write_chart_png retorna None imediatamente.
-        self._kaleido_available: bool = _check_kaleido_available()
+        self._output_dirs               = self._init_output_dirs(output_dirs)
+        self._id_lock                   = threading.Lock()
+        self._charts_created            = 0
+        self._total_generation_time     = 0.0
+        self._kaleido_available: bool   = _check_kaleido_available()
 
         self.audit.log_event(
             AuditEvent.TOOL_INITIALIZED,
             {
-                "tool":            "ChartTool",
-                "output_dirs":     {k: str(v) for k, v in self._output_dirs.items()},
-                "has_spark":       spark   is not None,
-                "has_dbutils":     dbutils is not None,
-                "png_export":      "enabled" if self._kaleido_available else (
+                "tool":        "ChartTool",
+                "output_dirs": {k: str(v) for k, v in self._output_dirs.items()},
+                "has_spark":   spark   is not None,
+                "has_dbutils": dbutils is not None,
+                "png_export":  "enabled" if self._kaleido_available else (
                     "disabled — kaleido nao instalado. "
                     "Execute: %pip install kaleido  (ou chart_tool.try_enable_png())"
                 ),
@@ -343,22 +264,16 @@ class ChartTool:
             EventStatus.INFO if self._kaleido_available else EventStatus.WARNING,
         )
 
+    # =========================================================================
+    # INICIALIZAÇÃO
+    # =========================================================================
+
     def _init_output_dirs(self, output_dirs: Optional[Dict[str, Path]]) -> Dict[str, Path]:
-        """
-        Inicializa e cria os diretórios de saída por tipo de gráfico.
-
-        Quando output_dirs é None, usa um único diretório padrão mapeado
-        como "default". Diretórios inacessíveis fazem fallback para um
-        diretório temporário local, registrando aviso no audit.
-        """
         import tempfile
-
         if output_dirs is None:
-            default = Path(f"{_DEFAULT_OUTPUT_BASE}/custom")
-            output_dirs = {"default": default}
+            output_dirs = {"default": Path(f"{_DEFAULT_OUTPUT_BASE}/custom")}
 
         initialized: Dict[str, Path] = {}
-
         for key, path in output_dirs.items():
             try:
                 if self.dbutils:
@@ -370,32 +285,198 @@ class ChartTool:
                 tmp = Path(tempfile.mkdtemp(prefix=f"charts_{key}_"))
                 self.audit.log_event(
                     AuditEvent.TOOL_DEGRADED,
-                    {
-                        "reason":      f"output_dir '{key}' inacessivel: {exc}",
-                        "fallback_dir": str(tmp),
-                    },
+                    {"reason": f"output_dir '{key}' inacessivel: {exc}", "fallback_dir": str(tmp)},
                     EventStatus.WARNING,
                 )
                 initialized[key] = tmp
 
         if "default" not in initialized:
-            fallback = list(initialized.values())[0]
-            initialized["default"] = fallback
-
+            initialized["default"] = list(initialized.values())[0]
         return initialized
 
     def _resolve_output_dir(self, chart_type: str) -> Path:
-        """
-        Retorna o diretório de destino para o tipo de gráfico informado.
-
-        A lookup usa o tipo exato e faz fallback para "default" quando o
-        tipo não está mapeado. Isso permite que tipos novos sejam adicionados
-        sem quebrar execuções existentes.
-        """
         return self._output_dirs.get(chart_type, self._output_dirs["default"])
 
     # =========================================================================
-    # METODOS PUBLICOS — TIPOS DE GRAFICO
+    # HELPERS PRIVADOS DE INTELIGÊNCIA VISUAL
+    # =========================================================================
+
+    def _validate_columns(
+        self,
+        df: pd.DataFrame,
+        required: List[str],
+        context: str,
+    ) -> List[str]:
+        """
+        Valida presença de colunas no DataFrame.
+
+        Retorna lista de colunas ausentes. Vazia = tudo ok.
+        Registra erro no audit quando há ausências.
+        """
+        missing = [c for c in required if c not in df.columns]
+        if missing:
+            self.audit.log_event(
+                AuditEvent.CHART_ERROR,
+                {
+                    "context":  context,
+                    "missing":  missing,
+                    "available": list(df.columns),
+                },
+                EventStatus.ERROR,
+            )
+        return missing
+
+    def _should_use_horizontal_bar(self, df: pd.DataFrame, x_col: str) -> bool:
+        """
+        Decide se barra horizontal é mais adequada que vertical.
+
+        Critérios:
+        - Mais de _H_BAR_THRESHOLD_CATEGORIES categorias, OU
+        - Comprimento médio dos labels acima de _H_BAR_THRESHOLD_LABEL_LEN.
+        """
+        n = len(df)
+        if n >= _H_BAR_THRESHOLD_CATEGORIES:
+            return True
+        avg_len = df[x_col].astype(str).str.len().mean() if n > 0 else 0
+        return avg_len > _H_BAR_THRESHOLD_LABEL_LEN
+
+    def _pct_axis_format(self) -> dict:
+        """Layout parcial para eixo Y percentual."""
+        return dict(ticksuffix="%", range=[0, None])
+
+    def _pct_hover_suffix(self, col: str) -> str:
+        return "%{y:.1f}%" if _is_percent_col(col) else "%{y:,.0f}"
+
+    def _sort_dataframe(
+        self,
+        df: pd.DataFrame,
+        x_col: str,
+        y_col: str,
+        ascending: bool = True,
+    ) -> pd.DataFrame:
+        """
+        Ordena o DataFrame de forma semanticamente adequada.
+
+        - Colunas temporais: ordem cronológica.
+        - Demais: por valor da métrica (descendente por padrão para ranking).
+        """
+        if _is_temporal_col(x_col):
+            try:
+                df = df.copy()
+                df[x_col] = pd.to_datetime(df[x_col], errors="ignore")
+                return df.sort_values(x_col, ascending=True).reset_index(drop=True)
+            except Exception:
+                return df.sort_values(x_col, ascending=True, key=lambda c: c.astype(str)).reset_index(drop=True)
+        return df.sort_values(y_col, ascending=ascending).reset_index(drop=True)
+
+    def _build_subtitle(self, df: pd.DataFrame, x_col: str) -> str:
+        """
+        Gera subtítulo com intervalo temporal quando detecta coluna de data.
+        Retorna string vazia quando não aplicável.
+        """
+        if not _is_temporal_col(x_col):
+            return ""
+        try:
+            vals = pd.to_datetime(df[x_col], errors="coerce").dropna()
+            if vals.empty:
+                return ""
+            return f"Período: {vals.min().strftime('%b/%Y')} – {vals.max().strftime('%b/%Y')}"
+        except Exception:
+            return ""
+
+    def _apply_standard_layout(
+        self,
+        fig: go.Figure,
+        chart_type: str,
+        subtitle: str = "",
+        is_pct: bool = False,
+        horizontal: bool = False,
+    ) -> None:
+        """
+        Aplica configurações visuais padronizadas e limpas.
+
+        Parâmetros
+        ----------
+        chart_type : tipo de gráfico (controla ajustes específicos de eixo).
+        subtitle   : texto de subtítulo/fonte exibido abaixo do título.
+        is_pct     : quando True, formata o eixo de valores como percentual.
+        horizontal : quando True, aplica formatação de eixo para barras horizontais.
+        """
+        title_obj = fig.layout.title
+        title_text = title_obj.text if title_obj and title_obj.text else ""
+
+        if subtitle:
+            title_text = f"{title_text}<br><sup style='color:#888;font-size:12px'>{subtitle}</sup>"
+
+        fig.update_layout(
+            title=dict(
+                text=title_text,
+                x=0.04,
+                xanchor="left",
+                font=dict(size=18, color="#2c2c2c"),
+            ),
+            height=self.config.default_height,
+            width=self.config.default_width,
+            margin=dict(l=70, r=40, t=80, b=80),
+            template=self.config.default_theme.value,
+            font=dict(family="Inter, Arial, sans-serif", size=13, color="#3a3a3a"),
+            hoverlabel=dict(
+                bgcolor="white",
+                font_size=13,
+                font_family="Inter, Arial, sans-serif",
+            ),
+            legend=dict(
+                orientation="h",
+                yanchor="bottom",
+                y=1.02,
+                xanchor="right",
+                x=1,
+                font=dict(size=12),
+            ),
+            plot_bgcolor="rgba(0,0,0,0)",
+            paper_bgcolor="rgba(0,0,0,0)",
+        )
+
+        # Eixo de valores como percentual
+        if is_pct:
+            axis_fmt = dict(ticksuffix="%", tickformat=".1f", gridcolor="#ebebeb")
+            if horizontal:
+                fig.update_xaxes(**axis_fmt)
+            else:
+                fig.update_yaxes(**axis_fmt)
+        else:
+            if horizontal:
+                fig.update_xaxes(gridcolor="#ebebeb", zeroline=False)
+            else:
+                fig.update_yaxes(gridcolor="#ebebeb", zeroline=False)
+
+        # Configurações específicas por tipo
+        if chart_type == "mensal":
+            fig.update_xaxes(
+                type="category",
+                tickmode="linear",
+                dtick=1,
+                tickangle=-45,
+                automargin=True,
+                showgrid=False,
+            )
+            fig.update_layout(height=560, margin=dict(b=100))
+
+        elif chart_type in ("bar", "geografico", "demografico"):
+            if not horizontal:
+                fig.update_xaxes(tickangle=-30, automargin=True, showgrid=False)
+            else:
+                fig.update_yaxes(automargin=True, showgrid=False)
+                fig.update_xaxes(showgrid=True, gridcolor="#ebebeb")
+
+        elif chart_type in ("line", "multi_line", "diario", "viral", "area"):
+            fig.update_xaxes(automargin=True, showgrid=False)
+
+        elif chart_type == "heatmap":
+            fig.update_layout(height=600, margin=dict(l=100, b=100))
+
+    # =========================================================================
+    # MÉTODOS PÚBLICOS — TIPOS DE GRÁFICO
     # =========================================================================
 
     def create_line_chart(
@@ -406,61 +487,65 @@ class ChartTool:
         y_col: str,
         **kwargs,
     ) -> Optional[Dict]:
-        """
-        Gráfico de linha simples com marcadores.
-
-        Retorna None (sem lançar exceção) quando o DataFrame está vazio ou
-        quando ocorre qualquer falha de renderização, para não interromper
-        o pipeline em caso de dado ausente.
-        """
+        """Gráfico de linha simples com marcadores e hover enriquecido."""
         try:
             start = time.time()
-            self.audit.log_event(
-                AuditEvent.CHART_GENERATION_START,
-                {"type": "line", "title": title},
-                EventStatus.INFO,
-            )
-
             df = self._ensure_dataframe(data)
             if df.empty:
                 return None
 
+            missing = self._validate_columns(df, [x_col, y_col], "create_line_chart")
+            if missing:
+                return None
+
+            is_pct  = _is_percent_col(y_col)
+            df      = self._sort_dataframe(df, x_col, y_col)
+            sub     = self._build_subtitle(df, x_col)
+
+            hover_fmt = "%{y:.1f}%" if is_pct else "%{y:,.0f}"
             fig = go.Figure()
             fig.add_trace(go.Scatter(
-                x=df[x_col], y=df[y_col],
-                mode="lines+markers", name=y_col,
-                line=dict(color=self.config.color_palette[0], width=2),
-                marker=dict(size=6),
+                x=df[x_col],
+                y=df[y_col],
+                mode="lines+markers",
+                name=humanize(y_col),
+                line=dict(color=self.config.color_palette[0], width=2.5),
+                marker=dict(size=6, color=self.config.color_palette[0]),
+                hovertemplate=(
+                    f"<b>{humanize(x_col)}</b>: %{{x}}<br>"
+                    f"<b>{humanize(y_col)}</b>: {hover_fmt}<extra></extra>"
+                ),
             ))
             fig.update_layout(
-                title=title, xaxis_title=x_col, yaxis_title=y_col,
-                template=self.config.default_theme.value,
+                title=title,
+                xaxis_title=humanize(x_col),
+                yaxis_title=humanize(y_col),
                 hovermode="x unified",
             )
-            self._apply_standard_layout(fig, "line")
-
+            self._apply_standard_layout(fig, "line", subtitle=sub, is_pct=is_pct)
             return self._write_and_record(fig, "line", title, len(df), start)
 
         except Exception as exc:
-            self.audit.log_event(
-                AuditEvent.CHART_ERROR,
-                {"type": "line", "error": str(exc)},
-                EventStatus.ERROR,
-            )
+            self.audit.log_event(AuditEvent.CHART_ERROR, {"type": "line", "error": str(exc)}, EventStatus.ERROR)
             return None
 
     def create_bar_chart(
         self,
-        data:  Union[pd.DataFrame, List[Dict]],
-        title: str,
-        x_col: str,
-        y_col: str,
+        data:       Union[pd.DataFrame, List[Dict]],
+        title:      str,
+        x_col:      str,
+        y_col:      str,
+        orientation: str = "auto",
+        sort_by:    str  = "value",
         **kwargs,
     ) -> Optional[Dict]:
         """
-        Gráfico de barras verticais.
+        Gráfico de barras com troca automática para horizontal.
 
-        Retorna None quando o DataFrame está vazio, sem lançar exceção.
+        orientation : "auto" | "v" | "h"
+            "auto" decide com base em cardinalidade e comprimento de labels.
+        sort_by : "value" | "category" | "none"
+            Controla ordenação das barras.
         """
         try:
             start = time.time()
@@ -468,25 +553,75 @@ class ChartTool:
             if df.empty:
                 return None
 
-            fig = go.Figure()
-            fig.add_trace(go.Bar(
-                x=df[x_col], y=df[y_col], name=y_col,
-                marker_color=self.config.color_palette[1],
-            ))
-            fig.update_layout(
-                title=title, xaxis_title=x_col, yaxis_title=y_col,
-                template=self.config.default_theme.value,
-            )
-            self._apply_standard_layout(fig, "bar")
+            missing = self._validate_columns(df, [x_col, y_col], "create_bar_chart")
+            if missing:
+                return None
 
+            is_pct   = _is_percent_col(y_col)
+            use_h    = (
+                orientation == "h"
+                or (orientation == "auto" and self._should_use_horizontal_bar(df, x_col))
+            )
+
+            # Ordenação
+            if sort_by == "value":
+                ascending = use_h  # horizontal: ascend para o maior ir no topo
+                df = df.sort_values(y_col, ascending=ascending).reset_index(drop=True)
+            elif sort_by == "category":
+                df = df.sort_values(x_col).reset_index(drop=True)
+
+            sub       = self._build_subtitle(df, x_col)
+            hover_fmt = "%{x:.1f}%" if (is_pct and use_h) else ("%{y:.1f}%" if is_pct else ("%{x:,.0f}" if use_h else "%{y:,.0f}"))
+            color     = self.config.color_palette[1]
+
+            fig = go.Figure()
+            if use_h:
+                fig.add_trace(go.Bar(
+                    x=df[y_col],
+                    y=df[x_col],
+                    orientation="h",
+                    name=humanize(y_col),
+                    marker_color=color,
+                    hovertemplate=(
+                        f"<b>{humanize(x_col)}</b>: %{{y}}<br>"
+                        f"<b>{humanize(y_col)}</b>: %{{x:.1f}}%<extra></extra>"
+                        if is_pct else
+                        f"<b>{humanize(x_col)}</b>: %{{y}}<br>"
+                        f"<b>{humanize(y_col)}</b>: %{{x:,.0f}}<extra></extra>"
+                    ),
+                ))
+                fig.update_layout(
+                    title=title,
+                    xaxis_title=humanize(y_col),
+                    yaxis_title=humanize(x_col),
+                )
+            else:
+                fig.add_trace(go.Bar(
+                    x=df[x_col],
+                    y=df[y_col],
+                    name=humanize(y_col),
+                    marker_color=color,
+                    hovertemplate=(
+                        f"<b>{humanize(x_col)}</b>: %{{x}}<br>"
+                        f"<b>{humanize(y_col)}</b>: %{{y:.1f}}%<extra></extra>"
+                        if is_pct else
+                        f"<b>{humanize(x_col)}</b>: %{{x}}<br>"
+                        f"<b>{humanize(y_col)}</b>: %{{y:,.0f}}<extra></extra>"
+                    ),
+                ))
+                fig.update_layout(
+                    title=title,
+                    xaxis_title=humanize(x_col),
+                    yaxis_title=humanize(y_col),
+                )
+
+            self._apply_standard_layout(
+                fig, "bar", subtitle=sub, is_pct=is_pct, horizontal=use_h
+            )
             return self._write_and_record(fig, "bar", title, len(df), start)
 
         except Exception as exc:
-            self.audit.log_event(
-                AuditEvent.CHART_ERROR,
-                {"type": "bar", "error": str(exc)},
-                EventStatus.ERROR,
-            )
+            self.audit.log_event(AuditEvent.CHART_ERROR, {"type": "bar", "error": str(exc)}, EventStatus.ERROR)
             return None
 
     def create_area_chart(
@@ -497,37 +632,49 @@ class ChartTool:
         y_col: str,
         **kwargs,
     ) -> Optional[Dict]:
-        """
-        Gráfico de área preenchida até o eixo zero.
-
-        Retorna None quando o DataFrame está vazio, sem lançar exceção.
-        """
+        """Gráfico de área preenchida com hover enriquecido."""
         try:
             start = time.time()
             df = self._ensure_dataframe(data)
             if df.empty:
                 return None
 
+            missing = self._validate_columns(df, [x_col, y_col], "create_area_chart")
+            if missing:
+                return None
+
+            is_pct = _is_percent_col(y_col)
+            df     = self._sort_dataframe(df, x_col, y_col)
+            sub    = self._build_subtitle(df, x_col)
+
             fig = go.Figure()
             fig.add_trace(go.Scatter(
-                x=df[x_col], y=df[y_col],
-                fill="tozeroy", name=y_col,
-                line=dict(color=self.config.color_palette[2]),
+                x=df[x_col],
+                y=df[y_col],
+                fill="tozeroy",
+                name=humanize(y_col),
+                mode="lines",
+                line=dict(color=self.config.color_palette[2], width=2),
+                fillcolor=f"rgba(44, 160, 44, 0.15)",
+                hovertemplate=(
+                    f"<b>{humanize(x_col)}</b>: %{{x}}<br>"
+                    f"<b>{humanize(y_col)}</b>: %{{y:.1f}}%<extra></extra>"
+                    if is_pct else
+                    f"<b>{humanize(x_col)}</b>: %{{x}}<br>"
+                    f"<b>{humanize(y_col)}</b>: %{{y:,.0f}}<extra></extra>"
+                ),
             ))
             fig.update_layout(
-                title=title, xaxis_title=x_col, yaxis_title=y_col,
-                template=self.config.default_theme.value,
+                title=title,
+                xaxis_title=humanize(x_col),
+                yaxis_title=humanize(y_col),
+                hovermode="x unified",
             )
-            self._apply_standard_layout(fig, "area")
-
+            self._apply_standard_layout(fig, "area", subtitle=sub, is_pct=is_pct)
             return self._write_and_record(fig, "area", title, len(df), start)
 
         except Exception as exc:
-            self.audit.log_event(
-                AuditEvent.CHART_ERROR,
-                {"type": "area", "error": str(exc)},
-                EventStatus.ERROR,
-            )
+            self.audit.log_event(AuditEvent.CHART_ERROR, {"type": "area", "error": str(exc)}, EventStatus.ERROR)
             return None
 
     def create_multi_line_chart(
@@ -539,11 +686,9 @@ class ChartTool:
         **kwargs,
     ) -> Optional[Dict]:
         """
-        Gráfico de linha com múltiplas séries sobrepostas.
+        Gráfico de linhas com múltiplas séries sobrepostas.
 
-        Colunas ausentes no DataFrame são silenciosamente ignoradas para
-        permitir que o breakdown viral seja renderizado mesmo quando um
-        agente viral não tem registros no período consultado.
+        Colunas ausentes no DataFrame são silenciosamente ignoradas.
         """
         try:
             start = time.time()
@@ -551,34 +696,52 @@ class ChartTool:
             if df.empty:
                 return None
 
+            missing_x = self._validate_columns(df, [x_col], "create_multi_line_chart")
+            if missing_x:
+                return None
+
+            active_cols = [c for c in y_cols if c in df.columns]
+            if not active_cols:
+                self.audit.log_event(
+                    AuditEvent.CHART_ERROR,
+                    {"type": "multi_line", "reason": "nenhuma coluna y disponivel", "requested": y_cols},
+                    EventStatus.ERROR,
+                )
+                return None
+
+            df  = self._sort_dataframe(df, x_col, active_cols[0])
+            sub = self._build_subtitle(df, x_col)
+            is_pct = all(_is_percent_col(c) for c in active_cols)
+
             fig = go.Figure()
-            for i, col in enumerate(y_cols):
-                if col not in df.columns:
-                    continue
+            for i, col in enumerate(active_cols):
+                color = self.config.color_palette[i % len(self.config.color_palette)]
+                hover = (
+                    f"<b>{humanize(x_col)}</b>: %{{x}}<br>"
+                    f"<b>{humanize(col)}</b>: %{{y:.1f}}%<extra></extra>"
+                    if _is_percent_col(col) else
+                    f"<b>{humanize(x_col)}</b>: %{{x}}<br>"
+                    f"<b>{humanize(col)}</b>: %{{y:,.0f}}<extra></extra>"
+                )
                 fig.add_trace(go.Scatter(
                     x=df[x_col], y=df[col],
-                    mode="lines+markers", name=col,
-                    line=dict(
-                        color=self.config.color_palette[i % len(self.config.color_palette)],
-                        width=2,
-                    ),
-                    marker=dict(size=5),
+                    mode="lines+markers",
+                    name=humanize(col),
+                    line=dict(color=color, width=2),
+                    marker=dict(size=5, color=color),
+                    hovertemplate=hover,
                 ))
             fig.update_layout(
-                title=title, xaxis_title=x_col, yaxis_title="Casos",
-                template=self.config.default_theme.value,
+                title=title,
+                xaxis_title=humanize(x_col),
+                yaxis_title="%" if is_pct else "Casos",
                 hovermode="x unified",
             )
-            self._apply_standard_layout(fig, "multi_line")
-
+            self._apply_standard_layout(fig, "multi_line", subtitle=sub, is_pct=is_pct)
             return self._write_and_record(fig, "multi_line", title, len(df), start)
 
         except Exception as exc:
-            self.audit.log_event(
-                AuditEvent.CHART_ERROR,
-                {"type": "multi_line", "error": str(exc)},
-                EventStatus.ERROR,
-            )
+            self.audit.log_event(AuditEvent.CHART_ERROR, {"type": "multi_line", "error": str(exc)}, EventStatus.ERROR)
             return None
 
     def create_heatmap(
@@ -590,40 +753,47 @@ class ChartTool:
         z_col: str,
         **kwargs,
     ) -> Optional[Dict]:
-        """
-        Heatmap a partir de dados no formato longo (long format).
-
-        O pivot para formato matricial é feito internamente. Quando há
-        combinações (x, y) duplicadas, o pivot lança ValueError — cabe ao
-        chamador garantir unicidade antes de invocar este método.
-        """
+        """Heatmap a partir de dados em formato longo (long format)."""
         try:
             start = time.time()
             df = self._ensure_dataframe(data)
             if df.empty:
                 return None
 
-            pivot_df = df.pivot(index=y_col, columns=x_col, values=z_col)
+            missing = self._validate_columns(df, [x_col, y_col, z_col], "create_heatmap")
+            if missing:
+                return None
+
+            is_pct    = _is_percent_col(z_col)
+            pivot_df  = df.pivot(index=y_col, columns=x_col, values=z_col)
+            colorscale = "RdYlGn_r" if not is_pct else "Blues"
+
             fig = go.Figure(data=go.Heatmap(
                 z=pivot_df.values,
-                x=pivot_df.columns,
-                y=pivot_df.index,
-                colorscale="RdYlGn_r",
+                x=[humanize(str(c)) for c in pivot_df.columns],
+                y=[humanize(str(r)) for r in pivot_df.index],
+                colorscale=colorscale,
+                hovertemplate=(
+                    f"<b>{humanize(x_col)}</b>: %{{x}}<br>"
+                    f"<b>{humanize(y_col)}</b>: %{{y}}<br>"
+                    f"<b>{humanize(z_col)}</b>: %{{z:.1f}}%<extra></extra>"
+                    if is_pct else
+                    f"<b>{humanize(x_col)}</b>: %{{x}}<br>"
+                    f"<b>{humanize(y_col)}</b>: %{{y}}<br>"
+                    f"<b>{humanize(z_col)}</b>: %{{z:,.0f}}<extra></extra>"
+                ),
+                colorbar=dict(title=humanize(z_col)),
             ))
             fig.update_layout(
-                title=title, xaxis_title=x_col, yaxis_title=y_col,
-                template=self.config.default_theme.value,
+                title=title,
+                xaxis_title=humanize(x_col),
+                yaxis_title=humanize(y_col),
             )
             self._apply_standard_layout(fig, "heatmap")
-
             return self._write_and_record(fig, "heatmap", title, len(df), start)
 
         except Exception as exc:
-            self.audit.log_event(
-                AuditEvent.CHART_ERROR,
-                {"type": "heatmap", "error": str(exc)},
-                EventStatus.ERROR,
-            )
+            self.audit.log_event(AuditEvent.CHART_ERROR, {"type": "heatmap", "error": str(exc)}, EventStatus.ERROR)
             return None
 
     def create_pie_chart(
@@ -635,9 +805,11 @@ class ChartTool:
         **kwargs,
     ) -> Optional[Dict]:
         """
-        Gráfico de pizza. Adequado para distribuições com até ~8 categorias.
+        Gráfico de pizza — restrito a até MAX_PIE_CATEGORIES categorias.
 
-        Retorna None quando o DataFrame está vazio, sem lançar exceção.
+        Quando a cardinalidade excede o limite, faz fallback automático para
+        barra horizontal com aviso no audit, preservando a informação sem
+        gerar um gráfico enganoso.
         """
         try:
             start = time.time()
@@ -645,29 +817,328 @@ class ChartTool:
             if df.empty:
                 return None
 
+            missing = self._validate_columns(df, [labels_col, values_col], "create_pie_chart")
+            if missing:
+                return None
+
+            n_cats = df[labels_col].nunique()
+            if n_cats > MAX_PIE_CATEGORIES:
+                self.audit.log_event(
+                    AuditEvent.CHART_ERROR,
+                    {
+                        "type":       "pie",
+                        "reason":     f"alta cardinalidade ({n_cats} categorias > {MAX_PIE_CATEGORIES}) — fallback para barra horizontal",
+                    },
+                    EventStatus.WARNING,
+                )
+                return self.create_bar_chart(
+                    data=df,
+                    title=title,
+                    x_col=labels_col,
+                    y_col=values_col,
+                    orientation="h",
+                )
+
             fig = go.Figure(data=[go.Pie(
                 labels=df[labels_col],
                 values=df[values_col],
-                marker=dict(colors=self.config.color_palette),
+                marker=dict(
+                    colors=self.config.color_palette[:n_cats],
+                    line=dict(color="white", width=2),
+                ),
+                textposition="auto",
+                textinfo="label+percent",
+                hovertemplate=(
+                    f"<b>%{{label}}</b><br>"
+                    f"{humanize(values_col)}: %{{value:,.0f}}<br>"
+                    f"Participação: %{{percent}}<extra></extra>"
+                ),
+                hole=0.0,
             )])
-            fig.update_layout(
-                title=title,
-                template=self.config.default_theme.value,
-            )
+            fig.update_layout(title=title)
             self._apply_standard_layout(fig, "pie")
-
             return self._write_and_record(fig, "pie", title, len(df), start)
 
         except Exception as exc:
-            self.audit.log_event(
-                AuditEvent.CHART_ERROR,
-                {"type": "pie", "error": str(exc)},
-                EventStatus.ERROR,
-            )
+            self.audit.log_event(AuditEvent.CHART_ERROR, {"type": "pie", "error": str(exc)}, EventStatus.ERROR)
             return None
 
     # =========================================================================
-    # GRAFICO AD-HOC
+    # GRÁFICOS ESPECIALIZADOS
+    # =========================================================================
+
+    def create_grouped_bar_chart(
+        self,
+        data:      Union[pd.DataFrame, List[Dict]],
+        title:     str,
+        x_col:     str,
+        y_col:     str,
+        group_col: str,
+        **kwargs,
+    ) -> Optional[Dict]:
+        """
+        Barras agrupadas por categoria.
+
+        Útil para comparar a mesma métrica em subgrupos (ex.: casos por
+        faixa etária, agrupados por sexo).
+
+        Parâmetros
+        ----------
+        x_col     : eixo X (ex.: faixa_etaria).
+        y_col     : métrica numérica (ex.: total_casos).
+        group_col : coluna de agrupamento que gera as séries (ex.: sexo).
+        """
+        try:
+            start = time.time()
+            df = self._ensure_dataframe(data)
+            if df.empty:
+                return None
+
+            missing = self._validate_columns(df, [x_col, y_col, group_col], "create_grouped_bar_chart")
+            if missing:
+                return None
+
+            is_pct  = _is_percent_col(y_col)
+            groups  = df[group_col].unique()
+            use_h   = self._should_use_horizontal_bar(df, x_col)
+
+            fig = go.Figure()
+            for i, grp in enumerate(groups):
+                grp_df = df[df[group_col] == grp]
+                color  = self.config.color_palette[i % len(self.config.color_palette)]
+                hover  = (
+                    f"<b>{humanize(x_col)}</b>: %{{x}}<br>"
+                    f"<b>{humanize(y_col)}</b>: %{{y:.1f}}%<extra></extra>"
+                    if is_pct else
+                    f"<b>{humanize(x_col)}</b>: %{{x}}<br>"
+                    f"<b>{humanize(y_col)}</b>: %{{y:,.0f}}<extra></extra>"
+                )
+                if use_h:
+                    fig.add_trace(go.Bar(
+                        x=grp_df[y_col], y=grp_df[x_col],
+                        orientation="h", name=str(grp),
+                        marker_color=color, hovertemplate=hover,
+                    ))
+                else:
+                    fig.add_trace(go.Bar(
+                        x=grp_df[x_col], y=grp_df[y_col],
+                        name=str(grp), marker_color=color,
+                        hovertemplate=hover,
+                    ))
+
+            fig.update_layout(
+                title=title,
+                barmode="group",
+                xaxis_title=humanize(y_col if use_h else x_col),
+                yaxis_title=humanize(x_col if use_h else y_col),
+            )
+            self._apply_standard_layout(fig, "bar", is_pct=is_pct, horizontal=use_h)
+            return self._write_and_record(fig, "bar", title, len(df), start)
+
+        except Exception as exc:
+            self.audit.log_event(AuditEvent.CHART_ERROR, {"type": "grouped_bar", "error": str(exc)}, EventStatus.ERROR)
+            return None
+
+    def create_top_n_chart(
+        self,
+        data:  Union[pd.DataFrame, List[Dict]],
+        title: str,
+        x_col: str,
+        y_col: str,
+        n:     int = 10,
+        **kwargs,
+    ) -> Optional[Dict]:
+        """
+        Ranking Top-N em barra horizontal, ordenado de maior para menor.
+
+        Sempre usa orientação horizontal para facilitar leitura de labels.
+        """
+        try:
+            start = time.time()
+            df = self._ensure_dataframe(data)
+            if df.empty:
+                return None
+
+            missing = self._validate_columns(df, [x_col, y_col], "create_top_n_chart")
+            if missing:
+                return None
+
+            is_pct = _is_percent_col(y_col)
+            df = (
+                df.sort_values(y_col, ascending=False)
+                  .head(n)
+                  .sort_values(y_col, ascending=True)  # ascendente p/ o maior ficar no topo
+                  .reset_index(drop=True)
+            )
+
+            fig = go.Figure()
+            fig.add_trace(go.Bar(
+                x=df[y_col],
+                y=df[x_col],
+                orientation="h",
+                name=humanize(y_col),
+                marker=dict(
+                    color=df[y_col],
+                    colorscale="Blues",
+                    showscale=False,
+                ),
+                hovertemplate=(
+                    f"<b>%{{y}}</b><br>{humanize(y_col)}: %{{x:.1f}}%<extra></extra>"
+                    if is_pct else
+                    f"<b>%{{y}}</b><br>{humanize(y_col)}: %{{x:,.0f}}<extra></extra>"
+                ),
+                text=df[y_col].apply(
+                    lambda v: f"{v:.1f}%" if is_pct else f"{v:,.0f}"
+                ),
+                textposition="outside",
+            ))
+            fig.update_layout(
+                title=title,
+                xaxis_title=humanize(y_col),
+                yaxis_title=humanize(x_col),
+                height=max(400, n * 42),
+            )
+            self._apply_standard_layout(fig, "bar", is_pct=is_pct, horizontal=True)
+            return self._write_and_record(fig, "bar", title, len(df), start)
+
+        except Exception as exc:
+            self.audit.log_event(AuditEvent.CHART_ERROR, {"type": "top_n", "error": str(exc)}, EventStatus.ERROR)
+            return None
+
+    def create_year_comparison_chart(
+        self,
+        data:     Union[pd.DataFrame, List[Dict]],
+        title:    str,
+        x_col:    str,
+        y_col:    str,
+        year_col: str,
+        **kwargs,
+    ) -> Optional[Dict]:
+        """
+        Compara séries de anos distintos em um único gráfico de linhas.
+
+        Cada ano recebe uma cor distinta da paleta. Ideal para comparação
+        de sazonalidade entre anos (ex.: meses × ano × casos).
+
+        Parâmetros
+        ----------
+        x_col    : dimensão do eixo X dentro de cada ano (ex.: mes).
+        y_col    : métrica (ex.: total_casos).
+        year_col : coluna que identifica o ano de cada registro.
+        """
+        try:
+            start = time.time()
+            df = self._ensure_dataframe(data)
+            if df.empty:
+                return None
+
+            missing = self._validate_columns(df, [x_col, y_col, year_col], "create_year_comparison_chart")
+            if missing:
+                return None
+
+            is_pct = _is_percent_col(y_col)
+            years  = sorted(df[year_col].unique())
+
+            fig = go.Figure()
+            for i, yr in enumerate(years):
+                yr_df = df[df[year_col] == yr].sort_values(x_col)
+                color = self.config.color_palette[i % len(self.config.color_palette)]
+                fig.add_trace(go.Scatter(
+                    x=yr_df[x_col],
+                    y=yr_df[y_col],
+                    mode="lines+markers",
+                    name=str(yr),
+                    line=dict(color=color, width=2),
+                    marker=dict(size=6, color=color),
+                    hovertemplate=(
+                        f"<b>{humanize(x_col)}</b>: %{{x}}<br>"
+                        f"<b>{yr}</b>: %{{y:.1f}}%<extra></extra>"
+                        if is_pct else
+                        f"<b>{humanize(x_col)}</b>: %{{x}}<br>"
+                        f"<b>{yr}</b>: %{{y:,.0f}}<extra></extra>"
+                    ),
+                ))
+            fig.update_layout(
+                title=title,
+                xaxis_title=humanize(x_col),
+                yaxis_title=humanize(y_col),
+                hovermode="x unified",
+            )
+            self._apply_standard_layout(fig, "multi_line", is_pct=is_pct)
+            return self._write_and_record(fig, "multi_line", title, len(df), start)
+
+        except Exception as exc:
+            self.audit.log_event(AuditEvent.CHART_ERROR, {"type": "year_comparison", "error": str(exc)}, EventStatus.ERROR)
+            return None
+
+    def create_rate_comparison_chart(
+        self,
+        data:     Union[pd.DataFrame, List[Dict]],
+        title:    str,
+        x_col:    str,
+        rate_cols: List[str],
+        **kwargs,
+    ) -> Optional[Dict]:
+        """
+        Compara múltiplas taxas percentuais em um único gráfico de barras agrupadas.
+
+        Todos os y_cols devem ser métricas percentuais. O eixo Y é
+        automaticamente formatado com sufixo "%".
+
+        Parâmetros
+        ----------
+        x_col      : dimensão de agrupamento (ex.: sg_uf, faixa_etaria).
+        rate_cols  : lista de colunas de taxa (ex.: ["taxa_mortalidade", "taxa_uti"]).
+        """
+        try:
+            start = time.time()
+            df = self._ensure_dataframe(data)
+            if df.empty:
+                return None
+
+            required = [x_col] + rate_cols
+            missing  = self._validate_columns(df, required, "create_rate_comparison_chart")
+            if missing:
+                return None
+
+            use_h = self._should_use_horizontal_bar(df, x_col)
+            fig   = go.Figure()
+
+            for i, col in enumerate(rate_cols):
+                color = self.config.color_palette[i % len(self.config.color_palette)]
+                hover = (
+                    f"<b>%{{y}}</b><br>{humanize(col)}: %{{x:.1f}}%<extra></extra>"
+                    if use_h else
+                    f"<b>%{{x}}</b><br>{humanize(col)}: %{{y:.1f}}%<extra></extra>"
+                )
+                if use_h:
+                    fig.add_trace(go.Bar(
+                        x=df[col], y=df[x_col],
+                        orientation="h", name=humanize(col),
+                        marker_color=color, hovertemplate=hover,
+                    ))
+                else:
+                    fig.add_trace(go.Bar(
+                        x=df[x_col], y=df[col],
+                        name=humanize(col),
+                        marker_color=color, hovertemplate=hover,
+                    ))
+
+            fig.update_layout(
+                title=title,
+                barmode="group",
+                xaxis_title=humanize(x_col if not use_h else rate_cols[0]),
+                yaxis_title=humanize(rate_cols[0] if not use_h else x_col),
+            )
+            self._apply_standard_layout(fig, "bar", is_pct=True, horizontal=use_h)
+            return self._write_and_record(fig, "bar", title, len(df), start)
+
+        except Exception as exc:
+            self.audit.log_event(AuditEvent.CHART_ERROR, {"type": "rate_comparison", "error": str(exc)}, EventStatus.ERROR)
+            return None
+
+    # =========================================================================
+    # GRÁFICO AD-HOC INTELIGENTE
     # =========================================================================
 
     def generate_custom_chart(
@@ -681,112 +1152,163 @@ class ChartTool:
         z_col:      Optional[str]       = None,
     ) -> Optional[Dict]:
         """
-        Ponto de entrada unificado para gráficos ad-hoc gerados pelo nó
-        execute_chart do orquestrador.
+        Ponto de entrada unificado para gráficos ad-hoc com inteligência visual.
 
-        Recebe dados já materializados (resultado da SQL dinâmica) e delega
-        para o método create_*_chart correspondente ao chart_type solicitado.
+        Diferentemente de um dispatcher simples, este método:
+        1. Valida as colunas solicitadas contra o DataFrame recebido.
+        2. Infere a natureza do dado (temporal, percentual, alta cardinalidade).
+        3. Corrige escolhas inadequadas de gráfico (ex.: pie com muitas
+           categorias, bar vertical para labels longos).
+        4. Aplica defaults inteligentes (orientação, formatação, ordenação).
+        5. Delega para o método especializado mais adequado.
 
-        Contrato de mapeamento de colunas por tipo
-        ------------------------------------------
-        "pie"
-            x_col é interpretado como labels_col (categorias do gráfico de pizza).
-            y_col é interpretado como values_col (magnitudes correspondentes).
-            Esse mapeamento é necessário porque create_pie_chart() tem assinatura
-            diferente dos demais create_*_chart(). O chamador deve garantir que
-            x_col contenha rótulos categóricos e y_col contenha valores numéricos.
+        Contrato de mapeamento por tipo
+        --------------------------------
+        "pie"       : x_col → labels_col, y_col → values_col.
+                      Cardinalidade alta faz fallback automático para barra.
+        "heatmap"   : x_col e y_col = eixos da matriz; z_col = intensidade (obrigatório).
+        "multi_line": y_cols = séries. Fallback para [y_col] quando y_cols é None.
+        "bar"       : orientação decidida automaticamente.
+        "top_n"     : alias para create_top_n_chart (top 10 por padrão).
 
-        "heatmap"
-            x_col e y_col definem os eixos da matriz. z_col define os valores
-            de intensidade. Quando z_col é None e chart_type="heatmap", o método
-            registra aviso no AuditLogger e retorna None — gerar um heatmap sem
-            a coluna Z produziria um gráfico incorreto silenciosamente.
-
-        "multi_line"
-            y_cols define as séries. Quando y_cols é None, usa [y_col] como
-            fallback de uma única série.
-
-        Tipos não reconhecidos fazem fallback para "bar" com aviso no audit,
-        em vez de falhar silenciosamente como na versão anterior.
-
-        Parâmetros
-        ----------
-        data       : dados em DataFrame ou lista de dicts.
-        chart_type : "bar" | "line" | "area" | "pie" | "multi_line" | "heatmap".
-        title      : título do gráfico, gerado pelo IntentRouter.
-        x_col      : coluna de agrupamento (eixo X ou labels para pie).
-        y_col      : coluna de métrica (eixo Y ou values para pie).
-        y_cols     : lista de colunas Y para multi_line.
-        z_col      : coluna de intensidade para heatmap.
-
-        Retorna o mesmo dict que os métodos create_*_chart ou None em falha.
+        Tipos não reconhecidos fazem fallback para "bar" com aviso no audit.
         """
+        try:
+            df = self._ensure_dataframe(data)
+        except ValueError as exc:
+            self.audit.log_event(
+                AuditEvent.CHART_ERROR,
+                {"type": chart_type, "reason": str(exc)},
+                EventStatus.ERROR,
+            )
+            return None
+
+        if df.empty:
+            self.audit.log_event(
+                AuditEvent.CHART_ERROR,
+                {"type": chart_type, "reason": "DataFrame vazio recebido"},
+                EventStatus.WARNING,
+            )
+            return None
+
+        # --- Heatmap (validação especial de z_col) ---
         if chart_type == "heatmap":
             if z_col is None:
                 self.audit.log_event(
                     AuditEvent.CHART_ERROR,
-                    {
-                        "type":   "heatmap",
-                        "reason": "z_col obrigatorio para heatmap — nenhum grafico gerado",
-                    },
+                    {"type": "heatmap", "reason": "z_col obrigatorio para heatmap"},
                     EventStatus.WARNING,
                 )
                 return None
-            return self.create_heatmap(data, title, x_col, y_col, z_col)
+            return self.create_heatmap(df, title, x_col, y_col, z_col)
 
-        dispatch = {
-            "bar":        lambda: self.create_bar_chart(data, title, x_col, y_col),
-            "line":       lambda: self.create_line_chart(data, title, x_col, y_col),
-            "area":       lambda: self.create_area_chart(data, title, x_col, y_col),
-            "pie":        lambda: self.create_pie_chart(data, title, x_col, y_col),
-            "multi_line": lambda: self.create_multi_line_chart(
-                data, title, x_col, y_cols if y_cols else [y_col]
-            ),
-        }
+        # --- Validação de colunas base ---
+        missing = self._validate_columns(df, [x_col, y_col], "generate_custom_chart")
+        if missing:
+            return None
 
-        if chart_type not in dispatch:
+        # --- Inferências ---
+        n_cats       = df[x_col].nunique()
+        is_temporal  = _is_temporal_col(x_col)
+        is_pct       = _is_percent_col(y_col)
+        many_cats    = n_cats > _H_BAR_THRESHOLD_CATEGORIES
+
+        # --- Correções de tipo de gráfico ---
+
+        # Pie com alta cardinalidade → barra horizontal
+        if chart_type == "pie" and n_cats > MAX_PIE_CATEGORIES:
             self.audit.log_event(
                 AuditEvent.CHART_ERROR,
                 {
-                    "type":     chart_type,
-                    "reason":   "chart_type nao reconhecido — fallback para bar",
-                    "received": chart_type,
+                    "type":      "pie",
+                    "reason":    f"alta cardinalidade ({n_cats}) — corrigido para bar horizontal",
+                    "correction": "bar_h",
                 },
                 EventStatus.WARNING,
             )
+            chart_type = "bar"
 
-        return dispatch.get(chart_type, dispatch["bar"])()
+        # Bar vertical com dados temporais → line (mais semântico)
+        if chart_type == "bar" and is_temporal and n_cats > 4:
+            self.audit.log_event(
+                AuditEvent.CHART_ERROR,
+                {
+                    "type":      "bar",
+                    "reason":    "série temporal — corrigido para line",
+                    "correction": "line",
+                },
+                EventStatus.WARNING,
+            )
+            chart_type = "line"
+
+        # --- Despacho ---
+        if chart_type == "pie":
+            return self.create_pie_chart(df, title, x_col, y_col)
+
+        if chart_type in ("line", "area"):
+            method = self.create_line_chart if chart_type == "line" else self.create_area_chart
+            return method(df, title, x_col, y_col)
+
+        if chart_type == "multi_line":
+            cols = y_cols if y_cols else [y_col]
+            return self.create_multi_line_chart(df, title, x_col, cols)
+
+        if chart_type == "top_n":
+            return self.create_top_n_chart(df, title, x_col, y_col)
+
+        if chart_type == "year_comparison":
+            # year_col deve vir em y_cols[0] por convenção, ou é inferido
+            # como a primeira coluna do DataFrame que contenha "ano" no nome.
+            year_col = (y_cols[0] if y_cols else None) or next(
+                (c for c in df.columns if "ano" in c.lower() and c != x_col), None
+            )
+            if year_col is None:
+                self.audit.log_event(
+                    AuditEvent.CHART_ERROR,
+                    {
+                        "type":   "year_comparison",
+                        "reason": "year_col nao identificado — passe y_cols=['nome_da_coluna_ano']",
+                    },
+                    EventStatus.WARNING,
+                )
+                return self.create_line_chart(df, title, x_col, y_col)
+            return self.create_year_comparison_chart(df, title, x_col, y_col, year_col)
+
+        if chart_type == "bar":
+            # Taxa com múltiplas colunas → rate_comparison
+            if is_pct and y_cols:
+                return self.create_rate_comparison_chart(df, title, x_col, [y_col] + y_cols)
+            return self.create_bar_chart(df, title, x_col, y_col, orientation="auto")
+
+        # Tipo não reconhecido → fallback bar com aviso
+        self.audit.log_event(
+            AuditEvent.CHART_ERROR,
+            {
+                "type":       chart_type,
+                "reason":     "chart_type nao reconhecido — fallback para bar",
+                "received":   chart_type,
+            },
+            EventStatus.WARNING,
+        )
+        return self.create_bar_chart(df, title, x_col, y_col, orientation="auto")
 
     # =========================================================================
-    # GRAFICOS PADRAO DO PIPELINE
+    # GRÁFICOS PADRÃO DO PIPELINE
     # =========================================================================
 
     def generate_all_charts(self) -> List[Dict]:
         """
         Gera o conjunto fixo de gráficos padrão do pipeline SRAG.
 
-        Este método é de uso explícito e opt-in. Deve ser chamado somente
-        quando a intenção classificada da query do usuário inclui visualização.
-        Chamá-lo após toda execução SQL gera work amplification desnecessário
-        — cinco queries Spark e dez escritas em disco (HTML + PNG por gráfico)
-        para perguntas que não solicitam gráficos.
-
-        Retorna List[Dict] com os metadados de cada gráfico gerado com
-        sucesso, incluindo path, path_png, chart_type e metadata completa.
-        Falhas individuais são capturadas por cada _generate_* e não
-        interrompem os demais. Gráficos que falharam são omitidos da lista
-        retornada.
-
-        O retorno de dicts completos (em vez de apenas paths) permite que o
-        chamador acesse file_size, generation_time e chart_type sem precisar
-        reabrir o arquivo ou inferir o tipo pelo nome.
+        Opt-in: deve ser chamado somente quando a intenção classificada da
+        query inclui visualização explícita.
         """
         generators = [
-            (self._generate_time_series_chart,      "diario"),
-            (self._generate_monthly_chart,           "mensal"),
-            (self._generate_geographic_chart,        "geografico"),
-            (self._generate_age_distribution_chart,  "demografico"),
-            (self._generate_viral_breakdown_chart,   "viral"),
+            (self._generate_time_series_chart,     "diario"),
+            (self._generate_monthly_chart,          "mensal"),
+            (self._generate_geographic_chart,       "geografico"),
+            (self._generate_age_distribution_chart, "demografico"),
+            (self._generate_viral_breakdown_chart,  "viral"),
         ]
 
         results:  List[Dict] = []
@@ -817,18 +1339,10 @@ class ChartTool:
             },
             EventStatus.SUCCESS if not failures else EventStatus.WARNING,
         )
-
         return results
 
     def _generate_time_series_chart(self) -> Optional[Dict]:
-        """
-        Série diária de casos — últimos 30 dias (gold_serie_diaria_30d).
-
-        A ordenação ASC é aplicada após o toPandas() porque a query usa
-        ORDER BY DESC com LIMIT para garantir que os 30 dias mais recentes
-        sejam selecionados antes de qualquer filtro adicional. Inverter a
-        ordem só no DataFrame evita uma segunda passagem pela tabela.
-        """
+        """Série diária de casos — últimos 30 dias."""
         if not self.spark:
             return None
         try:
@@ -839,46 +1353,25 @@ class ChartTool:
                 ORDER BY dt_sintomas DESC
                 LIMIT 30
             """).toPandas()
-
             if df.empty:
                 return None
-
-            df = df.sort_values("data_referencia", ascending=True).reset_index(drop=True)
-
-            return self.create_line_chart(
+            df = df.sort_values("data_referencia").reset_index(drop=True)
+            return self.create_area_chart(
                 data=df,
-                title="Evolucao de Casos Diarios — SRAG (Ultimos 30 dias)",
+                title="Evolução de Casos Diários — SRAG (Últimos 30 dias)",
                 x_col="data_referencia",
                 y_col="casos_dia",
             )
         except Exception as exc:
-            self.audit.log_event(
-                AuditEvent.CHART_ERROR,
-                {"type": "diario", "error": str(exc)},
-                EventStatus.ERROR,
-            )
+            self.audit.log_event(AuditEvent.CHART_ERROR, {"type": "diario", "error": str(exc)}, EventStatus.ERROR)
             return None
 
     def _generate_monthly_chart(self) -> Optional[Dict]:
-        """
-        Evolução mensal de casos — últimos 12 meses (gold_metricas_temporais).
-
-        A query usa CTE para calcular o valor de corte de data antes do WHERE.
-        Window functions (MAX(...) OVER()) são proibidas na cláusula WHERE em
-        Spark SQL e lançam AnalysisException. A versão anterior usava essa
-        construção, fazendo o gráfico mensal nunca ser gerado — o erro era
-        absorvido silenciosamente pelo except genérico. A CTE isola o cálculo
-        em uma subquery que retorna um escalar, permitido no WHERE.
-
-        O prefixo "srag_mensal_" no chart_id, gerado por _generate_chart_id,
-        é necessário para que o classificador do notebook 06 identifique este
-        gráfico como obrigatório na categoria mensal.
-        """
+        """Evolução mensal de casos — últimos 12 meses."""
         if not self.spark:
             return None
         try:
             start = time.time()
-
             df = self.spark.sql(f"""
                 WITH max_mes AS (
                     SELECT MAX(ano_mes) AS max_ano_mes
@@ -892,9 +1385,7 @@ class ChartTool:
                     ) AS mes_corte
                     FROM max_mes
                 )
-                SELECT
-                    t.ano_mes,
-                    SUM(t.total_casos) AS total_casos
+                SELECT t.ano_mes, SUM(t.total_casos) AS total_casos
                 FROM {self.catalog}.{self.schema}.gold_metricas_temporais t
                 CROSS JOIN corte c
                 WHERE t.ano_mes IS NOT NULL
@@ -918,108 +1409,85 @@ class ChartTool:
                 x=df["ano_mes"],
                 y=df["total_casos"],
                 name="Casos Mensais",
-                marker_color=self.config.color_palette[1],
+                marker=dict(
+                    color=df["total_casos"],
+                    colorscale="Blues",
+                    showscale=False,
+                ),
                 text=df["total_casos"].apply(lambda v: f"{v:,.0f}"),
                 textposition="outside",
+                hovertemplate=(
+                    "<b>Período</b>: %{x}<br>"
+                    "<b>Total de casos</b>: %{y:,.0f}<extra></extra>"
+                ),
             ))
             fig.update_layout(
-                title="Evolucao Mensal de Casos SRAG — Ultimos 12 Meses",
-                xaxis_title="Mes",
-                yaxis_title="Total de Casos",
-                template=self.config.default_theme.value,
+                title="Evolução Mensal de Casos SRAG — Últimos 12 Meses",
+                xaxis_title="Mês",
+                yaxis_title="Total de casos",
             )
             self._apply_standard_layout(fig, "mensal")
-
-            return self._write_and_record(
-                fig, "mensal", "Evolucao Mensal SRAG", len(df), start
-            )
+            return self._write_and_record(fig, "mensal", "Evolução Mensal SRAG", len(df), start)
 
         except Exception as exc:
-            self.audit.log_event(
-                AuditEvent.CHART_ERROR,
-                {"type": "mensal", "error": str(exc)},
-                EventStatus.ERROR,
-            )
+            self.audit.log_event(AuditEvent.CHART_ERROR, {"type": "mensal", "error": str(exc)}, EventStatus.ERROR)
             return None
 
     def _generate_geographic_chart(self) -> Optional[Dict]:
-        """Top 10 UFs por total de casos (gold_metricas_geograficas)."""
+        """Top 10 UFs por total de casos."""
         if not self.spark:
             return None
         try:
             df = self.spark.sql(f"""
                 SELECT sg_uf, SUM(total_casos) AS total_casos
                 FROM {self.catalog}.{self.schema}.gold_metricas_geograficas
-                WHERE total_casos IS NOT NULL
-                  AND sg_uf IS NOT NULL
+                WHERE total_casos IS NOT NULL AND sg_uf IS NOT NULL
                 GROUP BY sg_uf
                 ORDER BY total_casos DESC
                 LIMIT 10
             """).toPandas()
-
             if df.empty:
                 return None
-
-            return self.create_bar_chart(
+            return self.create_top_n_chart(
                 data=df,
                 title="Top 10 Estados por Casos SRAG",
                 x_col="sg_uf",
                 y_col="total_casos",
+                n=10,
             )
         except Exception as exc:
-            self.audit.log_event(
-                AuditEvent.CHART_ERROR,
-                {"type": "geografico", "error": str(exc)},
-                EventStatus.ERROR,
-            )
+            self.audit.log_event(AuditEvent.CHART_ERROR, {"type": "geografico", "error": str(exc)}, EventStatus.ERROR)
             return None
 
     def _generate_age_distribution_chart(self) -> Optional[Dict]:
-        """
-        Distribuição de casos por faixa etária (gold_metricas_demograficas).
-
-        A coluna física é faixa_etaria. O alias faixa_etaria_label é mantido
-        no SELECT para compatibilidade com o x_col passado ao create_bar_chart
-        sem renomear a coluna no schema Gold.
-        """
+        """Distribuição de casos por faixa etária."""
         if not self.spark:
             return None
         try:
             df = self.spark.sql(f"""
-                SELECT faixa_etaria AS faixa_etaria_label, SUM(total_casos) AS total_casos
+                SELECT faixa_etaria AS faixa_etaria_label,
+                       SUM(total_casos) AS total_casos
                 FROM {self.catalog}.{self.schema}.gold_metricas_demograficas
-                WHERE faixa_etaria IS NOT NULL
-                  AND total_casos IS NOT NULL
+                WHERE faixa_etaria IS NOT NULL AND total_casos IS NOT NULL
                 GROUP BY faixa_etaria, ordem_faixa
                 ORDER BY ordem_faixa ASC NULLS LAST
             """).toPandas()
-
             if df.empty:
                 return None
-
             return self.create_bar_chart(
                 data=df,
-                title="Distribuicao de Casos por Faixa Etaria",
+                title="Distribuição de Casos por Faixa Etária",
                 x_col="faixa_etaria_label",
                 y_col="total_casos",
+                orientation="h",
+                sort_by="none",
             )
         except Exception as exc:
-            self.audit.log_event(
-                AuditEvent.CHART_ERROR,
-                {"type": "demografico", "error": str(exc)},
-                EventStatus.ERROR,
-            )
+            self.audit.log_event(AuditEvent.CHART_ERROR, {"type": "demografico", "error": str(exc)}, EventStatus.ERROR)
             return None
 
     def _generate_viral_breakdown_chart(self) -> Optional[Dict]:
-        """
-        Breakdown viral diário — últimos 30 dias (gold_serie_diaria_30d).
-
-        As colunas disponíveis são as classificações virais (total_covid,
-        total_influenza, total_outro_virus, total_sem_classificacao). A tabela
-        não expõe total_obitos nesta granularidade. As classificações virais
-        são epidemiologicamente mais informativas para análise diária.
-        """
+        """Breakdown viral diário — últimos 30 dias."""
         if not self.spark:
             return None
         try:
@@ -1035,33 +1503,20 @@ class ChartTool:
                 ORDER BY dt_sintomas DESC
                 LIMIT 30
             """).toPandas()
-
             if df.empty:
                 return None
-
             return self.create_multi_line_chart(
                 data=df.sort_values("data_referencia"),
-                title="Breakdown Viral Diario — SRAG (Ultimos 30 dias)",
+                title="Breakdown Viral Diário — SRAG (Últimos 30 dias)",
                 x_col="data_referencia",
                 y_cols=["COVID_19", "Influenza", "Outro_Virus", "Sem_Classificacao"],
             )
         except Exception as exc:
-            self.audit.log_event(
-                AuditEvent.CHART_ERROR,
-                {"type": "viral", "error": str(exc)},
-                EventStatus.ERROR,
-            )
+            self.audit.log_event(AuditEvent.CHART_ERROR, {"type": "viral", "error": str(exc)}, EventStatus.ERROR)
             return None
 
     def _generate_gender_chart(self) -> Optional[Dict]:
-        """
-        Distribuição de casos por sexo (gold_metricas_demograficas).
-
-        Não incluído em generate_all_charts porque a tabela agrega faixa
-        etária e sexo no mesmo registro. Um groupby extra é necessário para
-        evitar contagem dupla, tornando o gráfico menos direto que os demais.
-        Disponível para uso pontual via chamada direta.
-        """
+        """Distribuição por sexo — disponível para uso pontual."""
         if not self.spark:
             return None
         try:
@@ -1071,83 +1526,24 @@ class ChartTool:
                 WHERE sexo_label IS NOT NULL AND total_casos IS NOT NULL
                 GROUP BY sexo_label
             """).toPandas()
-
             if df.empty:
                 return None
-
             return self.create_pie_chart(
                 data=df,
-                title="Distribuicao de Casos por Sexo",
+                title="Distribuição de Casos por Sexo",
                 labels_col="sexo_label",
                 values_col="total_casos",
             )
         except Exception as exc:
-            self.audit.log_event(
-                AuditEvent.CHART_ERROR,
-                {"type": "sexo", "error": str(exc)},
-                EventStatus.ERROR,
-            )
+            self.audit.log_event(AuditEvent.CHART_ERROR, {"type": "sexo", "error": str(exc)}, EventStatus.ERROR)
             return None
 
     # =========================================================================
-    # LAYOUT E PERSISTENCIA
+    # PERSISTÊNCIA E REGISTRO
     # =========================================================================
 
-    def _apply_standard_layout(self, fig: go.Figure, chart_type: str) -> None:
-        """
-        Aplica configurações visuais padronizadas por tipo de gráfico.
-
-        Centraliza altura, margens e configuração de eixo X para evitar
-        inconsistências entre os cinco tipos de gráfico gerados no pipeline.
-
-        O gráfico mensal recebe tratamento especial de eixo X: tickmode="linear"
-        com dtick=1 força a exibição de todos os labels de mês. O comportamento
-        padrão do Plotly (tickmode="auto") omite labels quando detecta risco de
-        sobreposição — em séries de 12 meses, apenas 4 a 6 labels ficam visíveis,
-        o que em contexto epidemiológico pode ser interpretado como dado faltante.
-        """
-        base_layout = dict(
-            height=self.config.default_height,
-            width=self.config.default_width,
-            margin=dict(l=60, r=40, t=60, b=60),
-        )
-
-        if chart_type == "mensal":
-            base_layout["height"] = 520
-            base_layout["margin"]["b"] = 90
-            fig.update_xaxes(
-                type="category",
-                tickmode="linear",
-                dtick=1,
-                tickangle=-45,
-                automargin=True,
-            )
-        elif chart_type in ("bar", "geografico", "demografico"):
-            fig.update_xaxes(tickangle=-30, automargin=True)
-        elif chart_type in ("line", "multi_line", "diario", "viral"):
-            fig.update_xaxes(automargin=True)
-
-        fig.update_layout(**base_layout)
-
     def _write_chart_html(self, fig: go.Figure, output_path: Path) -> None:
-        """
-        Persiste o HTML do gráfico de forma confiável.
-
-        include_plotlyjs="cdn" reduz cada arquivo de ~3.7 MB para ~8 KB,
-        carregando a biblioteca via CDN. O tradeoff é que o HTML não funciona
-        offline — aceitável dado que os relatórios SRAG são consultados em
-        ambientes com acesso à internet.
-
-        Estratégia de escrita:
-        1. Se dbutils está disponível, usa dbutils.fs.put() — confiável em
-           todas as versões do DBR, incluindo < 13.x com Unity Catalog Volumes.
-        2. Fallback para fig.write_html() nativo (funciona em DBR 13.x+ e local).
-
-        Lança exceção em caso de falha total para que _write_and_record possa
-        registrar o erro de auditoria com contexto preciso.
-        """
         html_content = fig.to_html(full_html=True, include_plotlyjs="cdn")
-
         if self.dbutils:
             try:
                 self.dbutils.fs.put(str(output_path), html_content, overwrite=True)
@@ -1155,67 +1551,31 @@ class ChartTool:
             except Exception as exc:
                 self.audit.log_event(
                     AuditEvent.CHART_WRITE_ERROR,
-                    {
-                        "path":     str(output_path),
-                        "method":   "dbutils.fs.put",
-                        "error":    str(exc),
-                        "fallback": "write_html nativo",
-                    },
+                    {"path": str(output_path), "method": "dbutils.fs.put", "error": str(exc), "fallback": "write nativo"},
                     EventStatus.WARNING,
                 )
-
         with open(str(output_path), "w", encoding="utf-8") as f:
             f.write(html_content)
 
     def _write_chart_png(self, fig: go.Figure, html_path: Path) -> Optional[Path]:
-        """
-        Exporta o gráfico como PNG estático via plotly.io.write_image().
-
-        O PNG é gerado diretamente a partir do objeto Figure com as mesmas
-        dimensões definidas em ChartConfig. O arquivo é salvo no mesmo
-        diretório do HTML correspondente, com o mesmo chart_id como base
-        de nome e extensão .png.
-
-        Guard de disponibilidade
-            self._kaleido_available é verificado antes de qualquer tentativa.
-            Quando False (kaleido não instalado ou com instalação corrompida),
-            o método retorna None imediatamente sem lançar exceção — evita os
-            5 chart_write_error no audit por execução que ocorriam quando a
-            verificação era feita aqui em vez de no __init__.
-            Para ativar o PNG sem reiniciar o ChartTool, use try_enable_png().
-
-        Este método é não-bloqueante por design: qualquer falha produz aviso
-        no AuditLogger e retorna None. O HTML permanece o artefato primário.
-
-        Retorna o Path do PNG gerado ou None em caso de falha ou kaleido ausente.
-        """
         if not self._kaleido_available:
             return None
-
         png_path = html_path.with_suffix(".png")
         try:
             pio.write_image(
-                fig,
-                str(png_path),
-                format="png",
+                fig, str(png_path), format="png",
                 width=self.config.default_width,
                 height=self.config.default_height,
             )
             return png_path
         except Exception as exc:
-            # Kaleido estava disponível no init mas falhou agora — pode ser
-            # timeout do renderizador ou permissão de escrita no Volume path.
             self.audit.log_event(
                 AuditEvent.CHART_WRITE_ERROR,
                 {
-                    "path":   str(png_path),
+                    "path":  str(png_path),
                     "method": "pio.write_image",
-                    "error":  str(exc),
-                    "hint":   (
-                        "Kaleido inicializou mas falhou ao renderizar. "
-                        "Verifique permissao de escrita no path e versao do kaleido: "
-                        "pip install --upgrade kaleido"
-                    ),
+                    "error": str(exc),
+                    "hint":  "verifique permissao de escrita e versao do kaleido",
                 },
                 EventStatus.WARNING,
             )
@@ -1229,21 +1589,6 @@ class ChartTool:
         data_points: int,
         start_time:  float,
     ) -> Dict:
-        """
-        Persiste o gráfico em HTML e PNG, atualiza contadores internos e
-        registra no AuditLogger. Centralizado para eliminar duplicação de
-        lógica de escrita e auditoria entre os create_*_chart().
-
-        A escrita HTML é bloqueante: uma falha levanta exceção e aborta o
-        registro. A escrita PNG é não-bloqueante: uma falha registra aviso
-        e preenche path_png com None no retorno, sem interromper o fluxo.
-
-        A escrita e o stat() têm blocos try/except independentes para que
-        falhas de permissão em Volume paths sejam distinguidas de falhas de
-        renderização. Sem essa separação, um FileNotFoundError em stat() seria
-        absorvido pelo except genérico do create_*_chart() sem identificar
-        que o arquivo foi escrito mas não pôde ser inspecionado.
-        """
         chart_id    = self._generate_chart_id(chart_type)
         output_dir  = self._resolve_output_dir(chart_type)
         output_path = output_dir / f"{chart_id}.html"
@@ -1253,18 +1598,13 @@ class ChartTool:
         except Exception as exc:
             self.audit.log_event(
                 AuditEvent.CHART_WRITE_ERROR,
-                {
-                    "chart_id": chart_id,
-                    "path":     str(output_path),
-                    "error":    str(exc),
-                },
+                {"chart_id": chart_id, "path": str(output_path), "error": str(exc)},
                 EventStatus.ERROR,
             )
             raise
 
         png_path = self._write_chart_png(fig, output_path)
-
-        elapsed = time.time() - start_time
+        elapsed  = time.time() - start_time
 
         with self._id_lock:
             self._charts_created        += 1
@@ -1276,12 +1616,7 @@ class ChartTool:
             file_size = len(fig.to_html(include_plotlyjs=False))
             self.audit.log_event(
                 AuditEvent.CHART_STAT_ERROR,
-                {
-                    "chart_id":        chart_id,
-                    "path":            str(output_path),
-                    "error":           str(exc),
-                    "file_size_proxy": file_size,
-                },
+                {"chart_id": chart_id, "path": str(output_path), "error": str(exc), "file_size_proxy": file_size},
                 EventStatus.WARNING,
             )
 
@@ -1323,30 +1658,25 @@ class ChartTool:
         }
 
     # =========================================================================
-    # MANUTENCAO E UTILITARIOS
+    # UTILITÁRIOS
     # =========================================================================
 
+    def _ensure_dataframe(self, data: Union[pd.DataFrame, List[Dict]]) -> pd.DataFrame:
+        if isinstance(data, pd.DataFrame):
+            return data
+        if isinstance(data, list):
+            return pd.DataFrame(data)
+        raise ValueError(f"Tipo nao suportado: {type(data)}")
+
+    def _generate_chart_id(self, chart_type: str) -> str:
+        ts  = datetime.now().strftime("%Y%m%d_%H%M%S")
+        uid = uuid.uuid4().hex[:8]
+        return f"srag_{chart_type}_{ts}_{uid}"
+
     def try_enable_png(self) -> bool:
-        """
-        Tenta instalar kaleido via pip e reabilita o export PNG.
-
-        Útil quando o ChartTool foi instanciado antes de kaleido estar
-        disponível (ex.: notebook que instala dependências na mesma sessão).
-        Não é necessário recriar o objeto ChartTool após chamar este método.
-
-        Em Databricks, a forma recomendada é usar `%pip install kaleido`
-        em uma célula separada antes de importar o módulo. Este método existe
-        como alternativa programática para scripts que não controlam o ambiente
-        de instalação.
-
-        Retorno
-        -------
-        True quando kaleido foi instalado com sucesso e está operacional.
-        False quando a instalação falhou ou o ambiente não permite pip install.
-        """
+        """Instala kaleido via pip e reabilita export PNG sem recriar o objeto."""
         if self._kaleido_available:
             return True
-
         try:
             subprocess.check_call(
                 [sys.executable, "-m", "pip", "install", "kaleido", "--quiet"],
@@ -1356,43 +1686,20 @@ class ChartTool:
         except Exception as exc:
             self.audit.log_event(
                 AuditEvent.TOOL_DEGRADED,
-                {
-                    "reason": "falha ao instalar kaleido via pip",
-                    "error":  str(exc),
-                    "hint":   "use %pip install kaleido em uma celula de notebook",
-                },
+                {"reason": "falha ao instalar kaleido", "error": str(exc)},
                 EventStatus.WARNING,
             )
             return False
-
-        # Revalida após instalação — o import pode precisar do módulo recém instalado
         self._kaleido_available = _check_kaleido_available()
-
         self.audit.log_event(
             AuditEvent.TOOL_INITIALIZED,
-            {
-                "event":       "kaleido_install_attempt",
-                "png_export":  "enabled" if self._kaleido_available else "failed",
-            },
+            {"event": "kaleido_install_attempt", "png_export": "enabled" if self._kaleido_available else "failed"},
             EventStatus.SUCCESS if self._kaleido_available else EventStatus.WARNING,
         )
         return self._kaleido_available
 
     def cleanup_old_charts(self, max_files: int = 100) -> int:
-        """
-        Remove os arquivos mais antigos quando o total excede max_files.
-
-        Percorre todos os diretórios mapeados em output_dirs e aplica o
-        limite de forma independente por diretório. A remoção considera tanto
-        HTMLs quanto PNGs, ordenados por data de modificação (os mais antigos
-        primeiro). Arquivos que não podem ser removidos são ignorados
-        individualmente com aviso no audit — uma falha de permissão em um
-        arquivo não deve abortar a limpeza dos demais.
-
-        Retorna o número total de arquivos removidos em todos os diretórios.
-        """
         total_removed = 0
-
         for dir_key, output_dir in self._output_dirs.items():
             try:
                 all_files = sorted(
@@ -1400,7 +1707,6 @@ class ChartTool:
                     key=lambda p: p.stat().st_mtime,
                 )
                 to_remove = all_files[: max(0, len(all_files) - max_files)]
-
                 removed = 0
                 for f in to_remove:
                     try:
@@ -1409,77 +1715,24 @@ class ChartTool:
                     except Exception as exc:
                         self.audit.log_event(
                             AuditEvent.CHART_CLEANUP,
-                            {
-                                "dir":    dir_key,
-                                "file":   f.name,
-                                "reason": "falha ao remover",
-                                "error":  str(exc),
-                            },
+                            {"dir": dir_key, "file": f.name, "reason": "falha ao remover", "error": str(exc)},
                             EventStatus.WARNING,
                         )
-
                 total_removed += removed
-
                 if removed:
                     self.audit.log_event(
                         AuditEvent.CHART_CLEANUP,
-                        {
-                            "dir":       dir_key,
-                            "removed":   removed,
-                            "remaining": len(all_files) - removed,
-                            "max_files": max_files,
-                        },
+                        {"dir": dir_key, "removed": removed, "remaining": len(all_files) - removed, "max_files": max_files},
                         EventStatus.INFO,
                     )
-
             except Exception as exc:
-                self.audit.log_event(
-                    AuditEvent.CHART_CLEANUP,
-                    {"dir": dir_key, "error": str(exc)},
-                    EventStatus.WARNING,
-                )
-
+                self.audit.log_event(AuditEvent.CHART_CLEANUP, {"dir": dir_key, "error": str(exc)}, EventStatus.WARNING)
         return total_removed
 
-    def _ensure_dataframe(self, data: Union[pd.DataFrame, List[Dict]]) -> pd.DataFrame:
-        """
-        Normaliza a entrada para DataFrame.
-
-        Lança ValueError para tipos não suportados — erro de contrato do
-        chamador, não capturado pelo handler genérico dos create_*_chart().
-        """
-        if isinstance(data, pd.DataFrame):
-            return data
-        if isinstance(data, list):
-            return pd.DataFrame(data)
-        raise ValueError(f"Tipo nao suportado: {type(data)}")
-
-    def _generate_chart_id(self, chart_type: str) -> str:
-        """
-        Gera um ID único por gráfico no formato srag_{tipo}_{timestamp}_{uuid4_curto}.
-
-        O prefixo "srag_" é exigido pelo classificador do notebook 06 para
-        diferenciar arquivos do pipeline de outros HTMLs no diretório de saída.
-
-        uuid4 em vez de contador garante unicidade em execuções paralelas sem
-        necessidade de lock. O contador anterior (_charts_created era lido e
-        incrementado em operações não atômicas separadas) permitia que dois
-        gráficos recebessem o mesmo ID antes de qualquer incremento.
-
-        O lock em _write_and_record() ainda protege o incremento de
-        _charts_created (usado para estatísticas), mas o ID não depende mais
-        desse contador.
-        """
-        ts  = datetime.now().strftime("%Y%m%d_%H%M%S")
-        uid = uuid.uuid4().hex[:8]
-        return f"srag_{chart_type}_{ts}_{uid}"
-
     def get_stats(self) -> Dict:
-        """Estatísticas acumuladas de geração desde a instanciação."""
         with self._id_lock:
             charts  = self._charts_created
             total_t = self._total_generation_time
-
         avg = total_t / charts if charts > 0 else 0.0
         return {
             "charts_created":        charts,
@@ -1505,13 +1758,9 @@ class ChartTool:
 
 class ChartGenerator(ChartTool):
     """
-    Alias mantido para compatibilidade com imports existentes no notebook 06.
-
-    Emite DeprecationWarning em toda instanciação para sinalizar que o nome
-    canônico é ChartTool. Sera removido em versão futura — migre todos os
-    imports para ChartTool diretamente.
+    Alias mantido para compatibilidade. Será removido em versão futura.
+    Migre imports para ChartTool diretamente.
     """
-
     def __init__(self, *args, **kwargs):
         warnings.warn(
             "ChartGenerator foi renomeado para ChartTool. "

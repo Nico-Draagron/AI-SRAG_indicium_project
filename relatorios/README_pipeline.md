@@ -1,6 +1,6 @@
 <!-- HEADER -->
 <p align="center">
-  <img src="images/capa_projeto.png" alt="Engenharia de Dados - SRAG" width="100%">
+  <img src="../images/capa_pipeline.png" alt="Agente Epidemiológico SRAG" width="100%">
 </p>
 
 
@@ -110,7 +110,7 @@ Raw CSV (SIVEP-Gripe)
 ```
 
 <p align="center">
-  <img src="images/01_arquitetura_medallion.png" alt="Arquitetura Medallion completa — Bronze até RAG" width="85%">
+  <img src="../images/01_arquitetura_medallion.png" alt="Arquitetura Medallion completa — Bronze até RAG" width="85%">
 </p>
 
 > Diagrama completo da arquitetura Medallion implementada: cada camada tem responsabilidade única e rastreabilidade garantida por `process_id` e `data_snapshot`. O fluxo é linear e determinístico, permitindo auditoria ponta a ponta.
@@ -213,19 +213,19 @@ Raw CSV (SIVEP-Gripe)
 
 #### 📊 Série Diária — Últimos 90 Dias
 
-![Série diária SRAG — 90d](images/graficos/eda_01_serie_diaria_90d.png)
+![Série diária SRAG — 90d](../images/graficos/eda_01_serie_diaria_90d.png)
 
 > Visualiza a distribuição diária de casos por data de primeiros sintomas na janela recente de 90 dias. Permite identificar picos pontuais e avaliar a tendência de curto prazo do pipeline de monitoramento.
 
 #### 📊 Casos por Mês — Últimos 12 Meses
 
-![Casos mensais SRAG — 12m](images/graficos/eda_02_casos_mensal_12m.png)
+![Casos mensais SRAG — 12m](../images/graficos/eda_02_casos_mensal_12m.png)
 
 > Série mensal com crescimento relativo mês a mês. Crescimento médio de **+23,93%/mês**, com alta máxima de **+258,62%** e queda máxima de **-63,25%** — evidenciando forte sazonalidade operacional.
 
 #### 📊 Sazonalidade por Semana Epidemiológica
 
-![Sazonalidade SRAG — Semana epidemiológica](images/graficos/eda_04_sazonalidade_semana.png)
+![Sazonalidade SRAG — Semana epidemiológica](../images/graficos/eda_04_sazonalidade_semana.png)
 
 > Sobreposição histórica de 2023–2025 por semana epidemiológica. Semanas de pico consistentes: **SE21 · SE20 · SE23 · SE22 · SE19** — padrão sazonal de inverno reproduzível entre os anos analisados.
 
@@ -242,7 +242,7 @@ Raw CSV (SIVEP-Gripe)
 | 2025 | 21.010 | 279.664 | **7,51%** |
 | **Total** | **66.682** | **771.195** | **8,65%** |
 
-![Mortalidade SRAG — 2023 a 2025](images/graficos/eda_10_desfechos_e_mortalidade.png)
+![Mortalidade SRAG — 2023 a 2025](../images/graficos/eda_10_desfechos_e_mortalidade.png)
 
 > Barras de desfechos por ano (cura vs óbito, códigos 3 e 9/null excluídos) acompanhadas da linha de evolução da taxa. A queda de **9,93% → 7,51%** entre 2023 e 2025 é o principal indicador de tendência epidemiológica do projeto.
 
@@ -255,7 +255,7 @@ Raw CSV (SIVEP-Gripe)
 | 2025 | 83.501 | 286.485 | **29,15%** |
 | **Total** | **231.686** | **764.878** | **30,29%** |
 
-![Ocupação UTI SRAG — 2023 a 2025](images/graficos/eda_11_uti_internacao.png)
+![Ocupação UTI SRAG — 2023 a 2025](../images/graficos/eda_11_uti_internacao.png)
 
 > Indicador hospital-based: calculado sobre internados com `HOSPITAL=1` e `UTI IN (1,2)`. O gráfico combina barras agrupadas (UTI vs Enfermaria) com linha de evolução da taxa — evidenciando estabilidade da ocupação em torno de **30%** nos três anos.
 
@@ -272,7 +272,7 @@ Raw CSV (SIVEP-Gripe)
 | 2025 | 85.110 | 295.311 | **28,82%** |
 | **Total** | **144.085** | **551.621** | **26,12%** |
 
-![Vacinação SRAG — 2023 a 2025](images/graficos/eda_12_vacinacao.png)
+![Vacinação SRAG — 2023 a 2025](../images/graficos/eda_12_vacinacao.png)
 
 > Denominador: registros com `VACINA IN (1,2)` — códigos 9 e NULL excluídos. A elevação para **28,82%** em 2025 sinaliza aumento de cobertura, com `VACINA_COV` tratada separadamente na Silver e Gold.
 
@@ -288,7 +288,7 @@ Raw CSV (SIVEP-Gripe)
 | `FEBRE` ↔ `TOSSE` | **0,218** | 🟡 Moderada |
 | `UTI` ↔ `EVOLUCAO` | **0,218** | 🟡 Moderada |
 
-![Cramér's V — Associações categóricas](images/graficos/eda_19_cramers_v.png)
+![Cramér's V — Associações categóricas](../images/graficos/eda_19_cramers_v.png)
 
 > Análise de associação entre variáveis clínicas categóricas (códigos 9 e NULL excluídos). A relação moderada entre `UTI` e `EVOLUCAO` (0,218) embasa diretamente a construção das flags epidemiológicas `is_uti_valido` e `is_obito_srag` na camada Silver.
 
@@ -315,7 +315,7 @@ Raw CSV (SIVEP-Gripe)
 Essa estrutura garante que a Silver não apenas limpe dados, mas formalize regras epidemiológicas explícitas, criando uma base determinística e auditável para geração das métricas Gold.
 
 <p align="center">
-  <img src="images/02_fluxo_silver.png" alt="Fluxo interno da camada Silver — parsing, filtros F1–F4, flags e otimização física" width="85%">
+  <img src="../images/02_fluxo_silver.png" alt="Fluxo interno da camada Silver — parsing, filtros F1–F4, flags e otimização física" width="85%">
 </p>
 
 > Fluxo completo da transformação Silver: desde o parsing seguro de datas e normalização de domínios (`_clean`), passando pelos filtros F1–F4, até a geração das flags epidemiológicas e otimização física com particionamento e Z-Order.
@@ -384,7 +384,7 @@ A partir dessa base padronizada e validada, a camada Gold consolida indicadores 
 > As etapas analíticas do pipeline Gold podem ser executadas em **paralelo**.
 
 <p align="center">
-  <img src="images/03_fluxo_gold.png" alt="Fluxo da camada Gold — métricas temporais, geográficas, demográficas e RAG" width="85%">
+  <img src="../images/03_fluxo_gold.png" alt="Fluxo da camada Gold — métricas temporais, geográficas, demográficas e RAG" width="85%">
 </p>
 
 > Diagrama do fluxo Gold: a Silver alimenta três eixos analíticos em paralelo (temporal, geográfico e demográfico), cujos resultados convergem para as tabelas RAG de fatos e dicionário de regras, prontas para indexação semântica.
@@ -589,5 +589,5 @@ O pipeline foi desenhado para ser **totalmente auditável**:
 ---
 
 <p align="center">
-  <img src="images/imagem_final_projeto.png" alt="Engenharia de Dados - SRAG" width="100%">
+  <img src="../images/imagem_final_projeto.png" alt="Engenharia de Dados - SRAG" width="100%">
 </p>

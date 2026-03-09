@@ -210,6 +210,40 @@ _vector_search() registra backend utilizado
     usando similarity_search() ou o fallback, impedindo diagnóstico de versão de SDK.
     O campo _search_backend no resultado permite rastrear qual caminho foi tomado
     por chamada.
+
+_vector_search(): fallback client.search() removido
+    O fallback chamava self.client.search(...), mas VectorSearchClient não expõe
+    esse método no SDK atual — levantava AttributeError que mascarava o erro real da
+    chamada principal (e1=similarity_search). Antes do fallback ser tentado, e1 nunca
+    era logado, impossibilitando diagnóstico. O fallback foi removido. A falha da
+    similarity_search agora é imediatamente classificada e logada via tag prefixada
+    antes de retornar _EMPTY_RESULT.
+
+_vector_search(): classificação de erros e log pré-chamada
+    A versão anterior não logava os parâmetros enviados a similarity_search — quando
+    a busca falhava, era impossível saber se o erro era de colunas, filtros, dimensão
+    do embedding, nome do índice ou endpoint. Log de diagnóstico adicionado antes da
+    chamada com: nome do índice, endpoint, dimensão do vetor, k, filtros e colunas
+    solicitadas. Erros classificados em cinco categorias com tag prefixada nos logs:
+    [AUTH] 401/403, [INDEX_NOT_FOUND] 404/not found, [SDK_INCOMPATIBILITY] AttributeError,
+    [TRANSIENT] timeout/connection, [FILTER_ERROR] formato inválido, [UNEXPECTED] outros.
+    get_index() tem bloco separado para capturar falhas antes de tentar a busca.
+
+_build_filter_dict(): valores None descartados antes do envio
+    _sanitize_filter_value(None) converte None para a string literal "None" via str().
+    Um filtro {"semantic_type": None} era enviado como {"semantic_type": "None"} para
+    a API, produzindo zero resultados sem erro explícito — comportamento indistinguível
+    de "nenhum documento deste tipo existe". Entradas com valor None agora são
+    descartadas antes da sanitização. Valores que resultam em string vazia após
+    sanitização também são descartados.
+
+search(): distinção entre backend=failed e zero resultados reais
+    O log "Busca concluída: 0 documentos" era emitido tanto quando a API retornava
+    zero resultados genuínos quanto quando o backend falhava (_search_backend=failed).
+    Não era possível distinguir "não há documentos para esta query" de "a busca falhou
+    completamente antes de qualquer resultado". Log diferenciado adicionado: [SEARCH]
+    prefixado para falha de backend e para zero resultados, preservando o log original
+    para o caso de sucesso com documentos.
 """
 
 import re
@@ -1112,9 +1146,27 @@ class DatabricksVectorStoreManager:
 
                 documents.sort(key=lambda x: x[1], reverse=True)
 
+                backend = search_results.get("_search_backend", "?")
+                if backend == "failed":
+                    # data_array vazio por falha de backend — não por ausência real de documentos.
+                    # _vector_search já logou a causa classificada antes de retornar _EMPTY_RESULT.
+                    print(
+                        f"[SEARCH] Busca retornou backend=failed — falha de infra/SDK, "
+                        f"não ausência de resultados. Consulte os logs [SEARCH][*] acima."
+                    )
+                    return []
+
                 top_score = f"{documents[0][1]:.4f}" if documents else "N/A"
-                backend   = search_results.get("_search_backend", "?")
-                print(f"Busca concluída: {len(documents)} documentos (score_top={top_score}, backend={backend})")
+                if not documents:
+                    print(
+                        f"[SEARCH] Zero resultados reais para a query "
+                        f"(backend={backend}, índice acessível mas sem match)."
+                    )
+                else:
+                    print(
+                        f"Busca concluída: {len(documents)} documentos "
+                        f"(score_top={top_score}, backend={backend})"
+                    )
                 return documents
 
             except Exception as e:
@@ -1579,57 +1631,133 @@ class DatabricksVectorStoreManager:
         filters:         Optional[Dict] = None,
     ) -> Dict:
         """
-        Executa a busca vetorial tentando duas APIs do SDK.
+        Executa a busca vetorial via index.similarity_search().
 
-        Tentativa 1: index.similarity_search() via objeto VectorSearchIndex.
-        Tentativa 2: client.search() via chamada direta ao client.
+        Caminho único de busca — não há fallback para client.search() porque
+        VectorSearchClient não expõe esse método no SDK atual. Chamar um método
+        inexistente levantaria AttributeError que mascararia o erro real da chamada
+        principal, dificultando o diagnóstico da causa raiz.
 
-        filters deve ser um dict {"column": "value"} — a API do Databricks
-        Standard Endpoint não aceita filter string (formato SQL). Passar uma
-        string causa o erro "Filter string is not supported for standard
-        endpoints". O parâmetro foi renomeado de filter_string para filters
-        para deixar o contrato explícito.
+        Em caso de falha, o erro é classificado e logado com tag prefixada antes de
+        retornar _EMPTY_RESULT. O get_index() tem bloco próprio para capturar falhas
+        de autenticação ou ausência do índice antes de tentar a busca.
 
-        O campo _search_backend no resultado indica qual API foi usada,
-        permitindo rastrear nos logs se o fallback está sendo acionado
-        sistematicamente — o que indicaria incompatibilidade de versão do SDK.
+        Categorias de erro
+        ------------------
+        [AUTH]                  HTTP 401/403 — credenciais ou permissões inválidas.
+        [INDEX_NOT_FOUND]       HTTP 404 — índice ou endpoint ausente ou não criado.
+        [INDEX_ERROR]           Outro erro em get_index() antes de tentar a busca.
+        [SDK_INCOMPATIBILITY]   AttributeError — similarity_search não existe na versão
+                                do SDK instalada; verificar databricks-vector-search.
+        [TRANSIENT]             Timeout ou connection error — instabilidade temporária,
+                                elegível para retry pelo loop em search().
+        [FILTER_ERROR]          Formato de filtro rejeitado pela API.
+        [UNEXPECTED]            Qualquer outro erro — loggado com parâmetros completos.
 
-        Retorna dict com data_array vazio somente se ambas as APIs falharem.
-        O campo _search_backend fica como "failed" nesse caso, distinguindo
-        "não há documentos" de "a busca falhou".
+        filters deve ser dict {"column": "value"} sem valores None — _build_filter_dict()
+        garante essa invariante antes de chamar este método.
+
+        Campos do retorno
+        -----------------
+        _search_backend="similarity_search"   sucesso normal.
+        _search_backend="failed"              falha total; distingue de zero resultados reais.
         """
+        _EMPTY_RESULT: Dict = {
+            "result":          {"data_array": [], "row_count": 0},
+            "_search_backend": "failed",
+        }
+        _COLUMNS = ["doc_id", "content", "metadata_json", "source_table", "semantic_type"]
+
+        # Bloco separado para get_index() — falhas aqui são de infra/auth, não de busca.
         try:
             index = self.client.get_index(
                 endpoint_name=self.config.endpoint_name,
                 index_name=self.full_index_name,
             )
+        except Exception as idx_err:
+            err_str = str(idx_err).lower()
+            if any(t in err_str for t in ("401", "403", "unauthorized", "forbidden")):
+                print(
+                    f"[SEARCH][AUTH] Falha de autenticação ao obter o índice. "
+                    f"Verifique o token e as permissões sobre o endpoint "
+                    f"'{self.config.endpoint_name}'. Detalhe: {idx_err}"
+                )
+            elif any(t in err_str for t in ("404", "not found", "does not exist")):
+                print(
+                    f"[SEARCH][INDEX_NOT_FOUND] Índice '{self.full_index_name}' não "
+                    f"encontrado no endpoint '{self.config.endpoint_name}'. "
+                    f"Verifique se o índice foi criado e o endpoint está ONLINE. "
+                    f"Detalhe: {idx_err}"
+                )
+            else:
+                print(
+                    f"[SEARCH][INDEX_ERROR] Erro ao obter objeto do índice. "
+                    f"endpoint='{self.config.endpoint_name}', "
+                    f"index='{self.full_index_name}'. Detalhe: {idx_err}"
+                )
+            return _EMPTY_RESULT
+
+        print(
+            f"[SEARCH] Chamando similarity_search — "
+            f"index='{self.full_index_name}', "
+            f"endpoint='{self.config.endpoint_name}', "
+            f"embedding_dim={len(query_embedding)}, "
+            f"k={k}, filters={filters}, columns={_COLUMNS}"
+        )
+
+        try:
             result = index.similarity_search(
                 query_vector=query_embedding,
-                columns=["doc_id", "content", "metadata_json", "source_table", "semantic_type"],
+                columns=_COLUMNS,
                 num_results=k,
-                filters=filters,   # dict {"semantic_type": "regra"} — não string SQL
+                filters=filters,   # dict {"semantic_type": "regra"} — não SQL string
             )
             result["_search_backend"] = "similarity_search"
             return result
 
-        except Exception as e1:
-            try:
-                result = self.client.search(
-                    index_name=self.full_index_name,
-                    query_vector=query_embedding,
-                    columns=["doc_id", "content", "metadata_json", "source_table", "semantic_type"],
-                    num_results=k,
-                    filters=filters,
-                )
-                result["_search_backend"] = "client_search_fallback"
-                return result
+        except AttributeError as attr_err:
+            print(
+                f"[SEARCH][SDK_INCOMPATIBILITY] O método 'similarity_search' não existe "
+                f"no objeto VectorSearchIndex desta versão do SDK Databricks. "
+                f"Verifique a versão instalada do pacote databricks-vector-search. "
+                f"Detalhe: {attr_err}"
+            )
+            return _EMPTY_RESULT
 
-            except Exception as e2:
-                print(f"Ambas as APIs de busca falharam: e1={e1} | e2={e2}")
-                return {
-                    "result":          {"data_array": [], "row_count": 0},
-                    "_search_backend": "failed",
-                }
+        except Exception as search_err:
+            err_str = str(search_err).lower()
+            if any(t in err_str for t in ("401", "403", "unauthorized", "forbidden")):
+                print(
+                    f"[SEARCH][AUTH] Falha de autenticação na busca vetorial. "
+                    f"Verifique o token e as permissões sobre o índice "
+                    f"'{self.full_index_name}'. Detalhe: {search_err}"
+                )
+            elif any(t in err_str for t in ("404", "not found", "does not exist")):
+                print(
+                    f"[SEARCH][ENDPOINT_NOT_FOUND] Endpoint ou índice não localizado "
+                    f"durante a busca. endpoint='{self.config.endpoint_name}', "
+                    f"index='{self.full_index_name}'. Detalhe: {search_err}"
+                )
+            elif any(t in err_str for t in ("timeout", "connection", "unavailable")):
+                print(
+                    f"[SEARCH][TRANSIENT] Erro transitório de rede/serviço durante a busca. "
+                    f"Elegível para retry pelo loop em search(). Detalhe: {search_err}"
+                )
+            elif "filter" in err_str:
+                print(
+                    f"[SEARCH][FILTER_ERROR] Erro no formato dos filtros enviados. "
+                    f"filters={filters}. O Standard Endpoint aceita apenas dict — não SQL string. "
+                    f"Detalhe: {search_err}"
+                )
+            else:
+                print(
+                    f"[SEARCH][UNEXPECTED] Erro inesperado em similarity_search. "
+                    f"index='{self.full_index_name}', "
+                    f"endpoint='{self.config.endpoint_name}', "
+                    f"embedding_dim={len(query_embedding)}, k={k}, filters={filters}. "
+                    f"Detalhe: {search_err}"
+                )
+            return _EMPTY_RESULT
 
     def _build_filter_dict(self, filters: Optional[Dict]) -> Optional[Dict]:
         """
@@ -1668,7 +1796,15 @@ class DatabricksVectorStoreManager:
         for key, value in filters.items():
             if key not in _ALLOWED_KEYS:
                 continue
+            if value is None:
+                # Valores None passados via str() tornam-se a string literal "None",
+                # que entra na API como filtro válido mas sem nenhum documento correspondente.
+                # O resultado é zero docs sem erro — indistinguível de ausência real de dados.
+                continue
             safe_value = self._sanitize_filter_value(value)
+            if not safe_value:
+                # Valor que resultou em string vazia após sanitização — descartar.
+                continue
             result_dict[key] = safe_value
 
         return result_dict if result_dict else None
