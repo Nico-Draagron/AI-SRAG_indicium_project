@@ -30,7 +30,7 @@
 | 2 | [Arquitetura da Solução](#2-arquitetura-da-solução) |
 | 3 | [Estrutura do Repositório](#3-estrutura-do-repositório) |
 | 4 | [Pré-requisitos](#4-pré-requisitos) — tipo de cluster, secrets CLI, alternativa Databricks LLM |
-| 5 | [Como Executar](#5-como-executar) |
+| 5 | [Como Executar](#5-como-executar) — etapa 0 (dados brutos), pipeline e agente |
 | 6 | [Resultados Obtidos](#6-resultados-obtidos) |
 | 7 | [Análise Epidemiológica Detalhada](#7-análise-epidemiológica-detalhada) |
 | 8 | [Notas de Interpretação dos Dados](#8-notas-de-interpretação-dos-dados) |
@@ -271,6 +271,59 @@ databricks-meta-llama-3-3-70b-instruct
 ---
 
 ## 5. Como Executar
+
+### Etapa 0 — Preparação dos Dados Brutos
+
+> ⚠️ **Execute este passo antes de qualquer notebook.** Sem os CSVs no Volume correto, o notebook Bronze não encontrará os arquivos e falhará na leitura.
+
+**Passo 1 — Criar o catálogo e o schema no Unity Catalog** (caso ainda não existam):
+
+```sql
+-- Execute em qualquer notebook ou no SQL Editor do Databricks
+CREATE CATALOG IF NOT EXISTS dbx_srag_lab;
+CREATE SCHEMA IF NOT EXISTS dbx_srag_lab.data_original;
+```
+
+**Passo 2 — Criar o Volume para os dados brutos:**
+
+```sql
+CREATE VOLUME IF NOT EXISTS dbx_srag_lab.data_original.dados_brutos;
+```
+
+**Passo 3 — Fazer upload dos CSVs para o Volume:**
+
+Acesse no Databricks: **Catalog → dbx_srag_lab → data_original → dados_brutos → Upload** e envie os três arquivos do SIVEP-Gripe:
+
+```
+INFLUD23-26-06-2025.csv   ← dados de 2023
+INFLUD24-26-06-2025.csv   ← dados de 2024
+INFLUD25-22-12-2025.csv   ← dados de 2025
+```
+
+O caminho completo de cada arquivo após o upload será:
+
+```
+/Volumes/dbx_srag_lab/data_original/dados_brutos/INFLUD23-26-06-2025.csv
+/Volumes/dbx_srag_lab/data_original/dados_brutos/INFLUD24-26-06-2025.csv
+/Volumes/dbx_srag_lab/data_original/dados_brutos/INFLUD25-22-12-2025.csv
+```
+
+**Passo 4 — Ajuste no notebook Bronze (se os nomes dos arquivos forem diferentes):**
+
+O notebook `01_Bronze_Ingestion_SRAG.py` referencia os arquivos pelo nome exato. Se você baixou versões com datas diferentes (ex.: `INFLUD25-31-12-2025.csv`), localize e atualize o trecho abaixo no notebook:
+
+```python
+# Trecho a localizar em 01_Bronze_Ingestion_SRAG.py
+FILES = {
+    2023: "INFLUD23-26-06-2025.csv",   # ← ajuste aqui se necessário
+    2024: "INFLUD24-26-06-2025.csv",   # ← ajuste aqui se necessário
+    2025: "INFLUD25-22-12-2025.csv",   # ← ajuste aqui se necessário
+}
+```
+
+> O mesmo ajuste pode ser necessário no notebook `01_Silver_SRAG.py` caso ele referencie os arquivos brutos diretamente. Verifique a célula de configuração de paths no início de ambos os notebooks antes de executar.
+
+---
 
 ### Etapa 1 — Pipeline de Dados
 
