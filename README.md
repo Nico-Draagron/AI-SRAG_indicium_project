@@ -31,7 +31,7 @@
 | 3 | [Estrutura do Repositório](#3-estrutura-do-repositório) |
 | 4 | [Pré-requisitos](#4-pré-requisitos) — tipo de cluster, secrets CLI, alternativa Databricks LLM |
 | 5 | [Como Executar](#5-como-executar) — etapa 0 (dados brutos), pipeline e agente |
-| 6 | [Resultados Obtidos](#6-resultados-obtidos) |
+| 6 | [Resultados Obtidos](#6-resultados-obtidos) — incluindo [relatório completo](#66-relatório-epidemiológico-completo--execução-real-09032026) e [consulta do avaliador](#67--consulta-interativa-do-avaliador) |
 | 7 | [Análise Epidemiológica Detalhada](#7-análise-epidemiológica-detalhada) |
 | 8 | [Notas de Interpretação dos Dados](#8-notas-de-interpretação-dos-dados) |
 | 9 | [Documentação Detalhada](#9-documentação-detalhada) |
@@ -466,6 +466,113 @@ result = orchestrator.run(user_query=USER_QUERY)
 <p align="center">
   <img src="images/agent/exemplo_noticias_recuperadas.png" alt="Notícias sobre SRAG recuperadas via Tavily API" width="100%">
 </p>
+
+### 6.6 Relatório Epidemiológico Completo — Execução Real (09/03/2026)
+
+> Este é o relatório completo gerado automaticamente pelo agente em execução real, com dados do SIVEP-Gripe via Databricks Gold Layer.
+
+---
+
+**Data de Geração:** 09/03/2026 às 20:33 · **Período de Referência:** 2025 · **Versão:** 3.1.0
+
+#### Resumo Executivo
+
+O indicador mais crítico do período é a **taxa de mortalidade de 7,43%** associada aos **319.490 casos** de SRAG registrados em 2025. A taxa de crescimento de **20,02%** em relação ao período imediatamente anterior indica aumento preocupante na incidência. A ocupação de UTI está em **26,76%** e a cobertura vacinal em **28,77%** — abaixo do ideal para contenção efetiva da doença.
+
+#### Métricas Epidemiológicas — 2025
+
+| Indicador | Valor | Classificação |
+|---|---|---|
+| Total de casos | **319.490** | — |
+| Taxa de crescimento | **20,02%** | 🔴 Crescimento expressivo |
+| Taxa de mortalidade | **7,43%** | 🟡 Nível moderado |
+| Taxa de ocupação UTI | **26,76%** | 🟢 Nível controlável |
+| Cobertura vacinal | **28,77%** | 🔴 Abaixo do ideal |
+
+#### Análise Geográfica — Top 5 Estados
+
+| Ranking | UF | Casos | Mortalidade |
+|---|---|---|---|
+| 1 | SP | 222.693 | 9,39% |
+| 2 | MG | 94.745 | 8,04% |
+| 3 | PR | 84.961 | 7,64% |
+| 4 | RJ | 59.901 | **12,75%** ⚠️ |
+| 5 | RS | 49.882 | 10,26% |
+
+> ⚠️ Todos os 5 estados listados apresentam mortalidade acima do limiar moderado de 5,0%. RJ destaca-se com a maior taxa (12,75%), recomendando análise urgente da capacidade hospitalar.
+
+#### Contexto Externo — Notícias Recuperadas via Tavily
+
+1. **SRAG: conheça doença que causou emergência em MG e Florianópolis** — CNN Brasil · [Ver artigo](https://www.cnnbrasil.com.br/saude/srag-conheca-doenca-que-causou-emergencia-em-mg-e-em-florianopolis/)
+2. **Casos de síndrome respiratória aguda grave voltam a crescer no Brasil** — Correio do Povo · [Ver artigo](https://www.correiodopovo.com.br/not%C3%ADcias/sa%C3%BAde/casos-de-sindrome-respiratoria-aguda-grave-voltam-a-crescer-no-brasil-1.1695702)
+
+#### Recomendações Geradas pelo Agente
+
+**Prioridade Alta**
+1. **Aumentar a cobertura vacinal** — Cobertura atual de 28,77% é insuficiente para contenção; implementar campanhas de vacinação em massa, priorizando regiões de maior incidência.
+2. **Monitorar ocupação de UTI** — Manter taxa abaixo de 70% com sistema de alerta e mobilização antecipada de recursos para regiões críticas.
+
+**Prioridade Média**
+3. **Medidas de contenção** — Restrições temporárias em eventos públicos e promoção de distanciamento em áreas com alta incidência.
+4. **Fortalecer vigilância epidemiológica** — Capacitação de equipes para detecção precoce e notificação imediata de casos suspeitos.
+5. **Educação em saúde** — Campanhas de conscientização sobre sintomas da SRAG e importância da vacinação.
+
+> *Fonte: SIVEP-Gripe via Databricks Gold Layer · Metodologia: Arquitetura Medallion (Bronze → Silver → Gold) · Sistema: LangGraph + GPT-4o-mini*
+
+---
+
+### 6.7 🧪 Consulta Interativa do Avaliador
+
+Esta seção demonstra uma consulta avançada submetida ao agente pelo avaliador da certificação, exercitando a estratégia `CHART` com análise comparativa multi-anual.
+
+---
+
+**▶ PIPELINE DE DECISÃO — CONSULTA DO AVALIADOR**
+
+| Atributo | Valor |
+|---|---|
+| **Query do avaliador** | *"Gere um gráfico de barras com o total de casos de SRAG por ano disponível e me diga qual foi o ano com maior número de casos, maior taxa de mortalidade e maior taxa de ocupação de UTI. Inclua uma análise comparativa entre os anos."* |
+| **Intent classificado** | `VISUALIZATION` |
+| **Estratégia escolhida** | `CHART` |
+| **Confiança do roteador** | **95%** |
+| **Ferramentas utilizadas** | Chart Tool · Report Generator |
+| **Tempo de execução** | 15,5s |
+| **Status** | ✅ OK |
+
+---
+
+**Métricas Consolidadas (2023–2025)**
+
+| Indicador | Valor |
+|---|---|
+| Total de casos (3 anos) | **863.092** |
+| Taxa de crescimento | 0,0% (consolidado) |
+| Taxa de mortalidade média | **8,54%** |
+| Taxa de UTI média | **27,65%** |
+| Taxa de vacinação média | **25,3%** |
+
+**Comparativo Anual — Dados Extraídos pelo Agente**
+
+| Ano | Total de Casos | Taxa Mortalidade | Taxa UTI | Vacinação |
+|---|---|---|---|---|
+| 2023 | 277.399 | **9,83%** 🔴 | 27,65% | 23,54% |
+| 2024 | 266.203 | 8,53% | **28,71%** 🔴 | 22,96% |
+| **2025** | **319.490** 🔴 | 7,43% | 26,76% | **28,77%** 🟢 |
+
+> 🏆 **Destaques:** 2025 = maior número de casos | 2023 = maior taxa de mortalidade | 2024 = maior taxa de ocupação de UTI
+
+**Análise Gerada pelo Agente**
+
+**1. FATOS** — O ano com maior número de casos foi **2025 (319.490)**, a maior taxa de mortalidade ocorreu em **2023 (9,83%)** e a maior taxa de ocupação de UTI em **2024 (28,71%)**.
+
+**2. INTERPRETAÇÃO** — A análise revela uma tendência de aumento no volume total de casos de 2024 para 2025 (+53.287 casos). Apesar deste aumento, a taxa de mortalidade apresentou queda contínua ao longo dos três anos, indicando provável melhoria na gestão clínica e no tratamento. A alta ocupação de UTI em 2024 pode ter influenciado positivamente os protocolos de resposta adotados em 2025.
+
+**3. LIMITAÇÕES** — Os dados podem estar sujeitos a subnotificações, especialmente nos últimos 14 dias de cada série. A variação nas taxas de vacinação entre os anos pode ter influenciado os resultados, mas causalidade direta não pode ser determinada apenas com os dados apresentados.
+
+**Recomendações do Agente**
+- Intensificar campanhas de vacinação — a taxa de 28,77% em 2025, embora a mais alta da série, ainda é insuficiente para imunização coletiva.
+- Monitorar de perto a ocupação de UTI em anos com aumento de casos para garantir capacidade de resposta adequada.
+- Investir em estratégias de notificação para reduzir subnotificação e melhorar qualidade dos dados epidemiológicos.
 
 ---
 
