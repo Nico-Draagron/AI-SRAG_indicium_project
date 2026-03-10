@@ -455,7 +455,7 @@ result = orchestrator.run(user_query=USER_QUERY)
   <img src="images/agent/exemplo_grafico_srag.png" alt="Gráfico de casos mensais de SRAG nos últimos 12 meses" width="100%">
 </p>
 
-#### Exemplo de Relatório Epidemiológico Gerado
+#### Exemplo de Relatório Epidemiológico Gerado (Ilustrativo - Real esta no final ou notebook agent_sytem)
 
 <p align="center">
   <img src="images/agent/exemplo_relatorio_gerado.png" alt="Relatório epidemiológico gerado pelo agente" width="100%">
